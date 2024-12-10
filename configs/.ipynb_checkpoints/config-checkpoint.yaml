@@ -1,0 +1,13 @@
+model:
+  text_model_name: "/storage/kromanova/models/multilingual-e5-large"
+  id_embed_dim: 32
+  text_embed_dim: 1024
+
+training:
+  batch_size: 32
+  epochs: 1
+  learning_rate: 5e-5
+  lambda_rec: 0.2
+
+data:
+  max_length: 128 

@@ -1,0 +1,7 @@
+data/dataset/all_events.csv
+data/dataset/id_history.parquet
+data/dataset/textual_history.parquet
+data/dataset/train_events.csv
+data/dataset/train_targets.csv
+data/dataset/user_descriptions.parquet
+data/dataset/video_info_v2.csv
