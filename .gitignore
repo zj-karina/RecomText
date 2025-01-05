@@ -1,3 +1,7 @@
+# Исключаем все содержимое папки data/datasets
+data/datasets/*
+
+# Существующие исключения
 data/dataset/all_events.csv
 data/dataset/id_history.parquet
 data/dataset/textual_history.parquet
@@ -5,3 +9,52 @@ data/dataset/train_events.csv
 data/dataset/train_targets.csv
 data/dataset/user_descriptions.parquet
 data/dataset/video_info_v2.csv
+
+# Общие исключения для Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Виртуальное окружение
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Модели и чекпоинты
+*.pt
+*.pth
+*.ckpt
+best_model.pt
+
+# Логи
+*.log
+logs/
+tensorboard/
+
+# Кэш
+.cache/
