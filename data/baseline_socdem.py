@@ -33,11 +33,12 @@ def create_user_history_sorted(df: pd.DataFrame) -> pd.DataFrame:
 
 def create_detailed_user_history(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Creates detailed textual viewing history for users
+    Creates detailed textual viewing history for users as a single string in `detailed_view`.
     """
+    # Словарь для перевода месяцев
     month_dict = {
         'January': 'января',
-        'February': 'февраля', 
+        'February': 'февраля',
         'March': 'марта',
         'April': 'апреля',
         'May': 'мая',
@@ -50,22 +51,21 @@ def create_detailed_user_history(df: pd.DataFrame) -> pd.DataFrame:
         'December': 'декабря'
     }
     
-    # Format date
+    # Форматируем дату
     df['formatted_date'] = pd.to_datetime(df['event_timestamp']).dt.strftime('%d %B')
     df['formatted_date'] = df['formatted_date'].apply(
         lambda x: f"{x.split()[0]} {month_dict.get(x.split()[1], x.split()[1])}"
     )
 
-    # Define client type
+    # Определяем тип клиента
     df['client_type'] = df['ua_client_type'].apply(
         lambda x: 'браузере' if x == 'browser' else 'приложении' if x == 'mobile app' else x
     )
     
+    # Создаем описание просмотра
     def create_view_description(row):
         parts = []
 
-        parts.append('query: ')
-        
         if pd.notna(row['title']):
             parts.append('Название видео: ' + str(row['title']))
             
@@ -81,15 +81,16 @@ def create_detailed_user_history(df: pd.DataFrame) -> pd.DataFrame:
         if pd.notna(row['formatted_date']):
             parts.append(str(row['formatted_date']))
             
-        return ' '.join(parts) if parts else None
+        return ', '.join(parts) if parts else None
     
+    # Добавляем подробности о просмотре
     df['detailed_view'] = df.apply(create_view_description, axis=1)
     
-    # Group by user
-    user_history = df.groupby('viewer_uid')['detailed_view'].agg(list).reset_index()
+    # Группируем по пользователям, добавляя `query:` только один раз
+    user_history = df.groupby('viewer_uid')['detailed_view'].agg(lambda x: 'query: ' + ' ; '.join(filter(None, x))).reset_index()
     
-    # Keep only users with more than one view
-    user_history = user_history[user_history['detailed_view'].map(len) > 1]
+    # Оставляем только пользователей с более чем одним просмотром
+    user_history = user_history[user_history['detailed_view'].str.contains(';')]
     
     return user_history.reset_index(drop=True)
 
@@ -98,6 +99,7 @@ def create_user_description(targets_df: pd.DataFrame) -> pd.DataFrame:
     Creates textual description of users based on their characteristics
     """
     # Convert seconds to hours
+    
     targets_df['hours_watched'] = targets_df['total_watchtime'] / 3600
     
     # Find maximum watch time for each user
@@ -135,16 +137,30 @@ def main():
     
     # Merge with video information
     result_with_video_info = pd.merge(result, video, on='rutube_video_id', how='left')
+
+    # Выбираем только колонки viewer_uid и region из result
+    regions = result[['viewer_uid', 'region']].drop_duplicates()
     
-    # Create viewing histories
+    # Добавляем region к targets
+    targets = pd.merge(targets, regions, on='viewer_uid', how='left')
+
+    # Выбираем только колонки viewer_uid и region из result
+    regions = result[['viewer_uid', 'total_watchtime']].drop_duplicates()
+    
+    # Добавляем region к targets
+    targets = pd.merge(targets, regions, on='viewer_uid', how='left')
+            
+    Create viewing histories
     user_history_df = create_user_history_sorted(result)
     detailed_history_df = create_detailed_user_history(result_with_video_info)
     user_descriptions = create_user_description(targets)
+
+    print(detailed_history_df)
     
     # Save results
-    detailed_history_df.to_parquet('textual_history.parquet')
-    user_history_df.to_parquet('id_history.parquet')
-    user_descriptions.to_parquet('user_descriptions.parquet')
+    detailed_history_df.to_parquet('./data/textual_history.parquet')
+    user_history_df.to_parquet('./data/id_history.parquet')
+    user_descriptions.to_parquet('./data/user_descriptions.parquet')
 
 if __name__ == "__main__":
     main() 

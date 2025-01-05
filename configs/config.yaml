@@ -3,13 +3,13 @@ model:
   id_embed_dim: 32
   text_embed_dim: 1024
 
-training:
+data:
+  max_length: 128
   batch_size: 32
+
+training:
   epochs: 1
   learning_rate: 5e-5
   lambda_rec: 0.2
   validation_size: 0.1
   random_seed: 42
-
-data:
-  max_length: 128 
