@@ -27,25 +27,42 @@ def train_model(config_path='config/config.yaml'):
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config['model']['text_model_name'])
     
-    # Create dataset and dataloader
-    dataset = BuildTrainDataset(
+    # Create train and validation datasets
+    train_dataset = BuildTrainDataset(
         textual_history, 
         user_descriptions, 
         id_history, 
-        tokenizer, 
-        max_length=config['data']['max_length']
+        tokenizer,
+        max_length=config['data']['max_length'],
+        split='train'
     )
-    dataloader = create_dataloader(
-        dataset, 
+    
+    val_dataset = BuildTrainDataset(
+        textual_history, 
+        user_descriptions, 
+        id_history, 
+        tokenizer,
+        max_length=config['data']['max_length'],
+        split='val'
+    )
+    
+    train_dataloader = create_dataloader(
+        train_dataset, 
         batch_size=config['training']['batch_size']
     )
     
+    val_dataloader = create_dataloader(
+        val_dataset,
+        batch_size=config['training']['batch_size'],
+        shuffle=False
+    )
+    
     # Save mappings
-    save_mappings(dataset)
+    save_mappings(train_dataset)
     
     # Initialize model
-    user_vocab_size = len(dataset.user_id_map)
-    items_vocab_size = len(dataset.item_id_map)
+    user_vocab_size = len(train_dataset.user_id_map)
+    items_vocab_size = len(train_dataset.item_id_map)
     
     model = MultimodalRecommendationModel(
         text_model_name=config['model']['text_model_name'],
@@ -70,11 +87,14 @@ def train_model(config_path='config/config.yaml'):
     )
     
     # Training loop
+    best_metrics = None
+    best_loss = float('inf')
+    
     for epoch in range(config['training']['epochs']):
         model.train()
         total_loss = 0
         
-        for batch in tqdm(dataloader, desc=f"Epoch {epoch + 1}/{config['training']['epochs']}"):
+        for batch in tqdm(train_dataloader, desc=f"Epoch {epoch + 1}/{config['training']['epochs']}"):
             item_text_inputs, user_text_inputs, item_ids, user_ids = batch
             
             # Move to device
@@ -121,7 +141,38 @@ def train_model(config_path='config/config.yaml'):
 
             total_loss += loss.item()
         
-        print(f"Epoch {epoch + 1}, Average Loss: {total_loss / len(dataloader):.4f}")
+        avg_train_loss = total_loss / len(train_dataloader)
+        
+        # Validation
+        print("\nRunning validation...")
+        val_metrics, val_loss = evaluate_model(
+            model=model,
+            dataloader=val_dataloader,
+            categories_map=train_dataset.categories_map,
+            embeddings_dict=train_dataset.embeddings_dict,
+            all_categories=train_dataset.all_categories,
+            device=device
+        )
+        
+        # Print metrics
+        print(f"\nEpoch {epoch + 1}")
+        print(f"Training Loss: {avg_train_loss:.4f}")
+        print(f"Validation Loss: {val_loss:.4f}")
+        print("\nValidation Metrics:")
+        for metric, value in val_metrics.items():
+            print(f"{metric}: {value:.4f}")
+        
+        # Save best model
+        if val_loss < best_loss:
+            best_loss = val_loss
+            best_metrics = val_metrics
+            torch.save(model.state_dict(), 'best_model.pt')
+            print("\nSaved new best model!")
+    
+    print("\nTraining completed!")
+    print("\nBest Validation Metrics:")
+    for metric, value in best_metrics.items():
+        print(f"{metric}: {value:.4f}")
 
 def evaluate_model(model: torch.nn.Module, 
                   dataloader: torch.utils.data.DataLoader,

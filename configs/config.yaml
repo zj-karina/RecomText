@@ -8,6 +8,8 @@ training:
   epochs: 1
   learning_rate: 5e-5
   lambda_rec: 0.2
+  validation_size: 0.1
+  random_seed: 42
 
 data:
   max_length: 128 

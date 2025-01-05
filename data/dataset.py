@@ -2,13 +2,24 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 import pandas as pd
+from sklearn.model_selection import train_test_split
 
 class BuildTrainDataset(Dataset):
     """Dataset for training with unpackable outputs and user-description fallback."""
-    def __init__(self, textual_history, user_descriptions, id_history, tokenizer, max_length=128):
-        self.textual_history = textual_history
+    def __init__(self, textual_history, user_descriptions, id_history, tokenizer, max_length=128, split='train', val_size=0.1, random_state=42):
+        # Split data
+        train_idx, val_idx = train_test_split(
+            range(len(id_history)), 
+            test_size=val_size, 
+            random_state=random_state
+        )
+        
+        # Select appropriate indices based on split
+        indices = train_idx if split == 'train' else val_idx
+        
+        self.textual_history = textual_history.iloc[indices].reset_index(drop=True)
+        self.id_history = id_history.iloc[indices].reset_index(drop=True)
         self.user_descriptions = user_descriptions
-        self.id_history = id_history
         self.tokenizer = tokenizer
         self.max_length = max_length
 
