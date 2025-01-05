@@ -1,5 +1,5 @@
 # Исключаем все содержимое папки data/datasets
-data/datasets/*
+data/dataset/*
 
 # Существующие исключения
 data/dataset/all_events.csv
