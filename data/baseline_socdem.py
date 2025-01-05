@@ -6,10 +6,10 @@ def load_data() -> tuple:
     """
     Loads all required datasets
     """
-    data = pd.read_csv('train_events.csv')
-    video = pd.read_csv('video_info_v2.csv')
-    targets = pd.read_csv('train_targets.csv')
-    all_events = pd.read_csv('all_events.csv')
+    data = pd.read_csv('./data/train_events.csv')
+    video = pd.read_csv('./data/video_info_v2.csv')
+    targets = pd.read_csv('./data/train_targets.csv')
+    all_events = pd.read_csv('./data/all_events.csv')
     
     return data, video, targets, all_events
 
