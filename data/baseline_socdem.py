@@ -153,7 +153,7 @@ def main():
     # Добавляем region к targets
     targets = pd.merge(targets, regions, on='viewer_uid', how='left')
             
-    Create viewing histories
+    # Create viewing histories
     user_history_df = create_user_history_sorted(result)
     detailed_history_df = create_detailed_user_history(result_with_video_info)
     user_descriptions = create_user_description(targets)

@@ -46,7 +46,28 @@ class BuildTrainDataset(Dataset):
         viewer_uid = self.id_history.iloc[idx]['viewer_uid']
         item_text = self.textual_history.iloc[idx]['detailed_view']
         item_ids = self.id_history.iloc[idx]['clean_video_id']
+        
+        # Преобразуем список категорий в one-hot вектор
         categories = self.categories[idx]
+        if isinstance(categories, list):
+            # Если categories - список, берем первую категорию
+            # или можно использовать другую логику агрегации
+            category = categories[0] if categories else 'unknown'
+        else:
+            category = categories
+            
+        # Преобразуем категорию в числовой формат
+        if not hasattr(self, 'category_map'):
+            # Создаем маппинг категорий при первом использовании
+            unique_categories = set()
+            for cats in self.categories:
+                if isinstance(cats, list):
+                    unique_categories.update(cats)
+                else:
+                    unique_categories.add(cats)
+            self.category_map = {cat: idx for idx, cat in enumerate(sorted(unique_categories))}
+            
+        category_idx = self.category_map.get(category, len(self.category_map) - 1)  # последний индекс для unknown
         
         # Convert item_ids to numeric format
         if isinstance(item_ids, (list, np.ndarray)):
@@ -83,7 +104,7 @@ class BuildTrainDataset(Dataset):
             user_text_inputs,
             torch.tensor(item_ids, dtype=torch.int64),
             torch.tensor(mapped_user_id, dtype=torch.int64),
-            categories
+            torch.tensor(category_idx, dtype=torch.long)  # возвращаем числовой индекс категории
         )
 
 def get_dataloader(dataset, batch_size, shuffle=True):
@@ -109,6 +130,6 @@ def custom_collate_fn(batch):
     item_ids = pad_sequence([x for x in item_ids], batch_first=True, padding_value=0)
     user_ids = torch.stack(user_ids)
     
-    categories = torch.tensor([cat for cat in categories])
+    categories = torch.stack([cat for cat in categories])  # теперь можно использовать stack, так как все элементы - тензоры
     
     return item_text_inputs, user_text_inputs, item_ids, user_ids, categories
