@@ -81,18 +81,21 @@ def create_detailed_user_history(df: pd.DataFrame) -> pd.DataFrame:
         if pd.notna(row['formatted_date']):
             parts.append(str(row['formatted_date']))
             
-        return ', '.join(parts) if parts else None
+        # Сохраняем категорию отдельно
+        category = row.get('category', 'unknown')
+            
+        return ' '.join(parts) if parts else None, category
     
-    # Добавляем подробности о просмотре
-    df['detailed_view'] = df.apply(create_view_description, axis=1)
+    # Добавляем подробности о просмотре и категорию
+    df[['detailed_view', 'category']] = df.apply(create_view_description, axis=1, result_type='expand')
     
-    # Группируем по пользователям, добавляя `query:` только один раз
-    user_history = df.groupby('viewer_uid')['detailed_view'].agg(lambda x: 'query: ' + ' ; '.join(filter(None, x))).reset_index()
+    # Группируем по пользователям
+    user_history = df.groupby('viewer_uid').agg({
+        'detailed_view': lambda x: 'query: ' + ' ; '.join(filter(None, x)),
+        'category': list  # Сохраняем список категорий
+    }).reset_index()
     
-    # Оставляем только пользователей с более чем одним просмотром
-    user_history = user_history[user_history['detailed_view'].str.contains(';')]
-    
-    return user_history.reset_index(drop=True)
+    return user_history
 
 def create_user_description(targets_df: pd.DataFrame) -> pd.DataFrame:
     """

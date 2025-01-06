@@ -213,7 +213,7 @@ class Trainer:
 
     def training_step(self, batch):
         """Один шаг обучения."""
-        items_text_inputs, user_text_inputs, item_ids, user_ids = [
+        items_text_inputs, user_text_inputs, item_ids, user_ids, categories = [
             self.to_device(x) for x in batch
         ]
 

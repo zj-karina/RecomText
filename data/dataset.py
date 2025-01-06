@@ -35,6 +35,8 @@ class BuildTrainDataset(Dataset):
         self.reverse_user_id_map = {idx: uid for uid, idx in self.user_id_map.items()}
         self.reverse_item_id_map = {idx: iid for iid, idx in self.item_id_map.items()}
 
+        self.categories = textual_history['category'].values
+
     def __len__(self):
         return len(self.indices)
 
@@ -44,6 +46,7 @@ class BuildTrainDataset(Dataset):
         viewer_uid = self.id_history.iloc[idx]['viewer_uid']
         item_text = self.textual_history.iloc[idx]['detailed_view']
         item_ids = self.id_history.iloc[idx]['clean_video_id']
+        categories = self.categories[idx]
         
         # Convert item_ids to numeric format
         if isinstance(item_ids, (list, np.ndarray)):
@@ -79,7 +82,8 @@ class BuildTrainDataset(Dataset):
             item_text_inputs,
             user_text_inputs,
             torch.tensor(item_ids, dtype=torch.int64),
-            torch.tensor(mapped_user_id, dtype=torch.int64)
+            torch.tensor(mapped_user_id, dtype=torch.int64),
+            categories
         )
 
 def get_dataloader(dataset, batch_size, shuffle=True):
@@ -91,7 +95,7 @@ def get_dataloader(dataset, batch_size, shuffle=True):
     )
 
 def custom_collate_fn(batch):
-    item_text_inputs, user_text_inputs, item_ids, user_ids = zip(*batch)
+    item_text_inputs, user_text_inputs, item_ids, user_ids, categories = zip(*batch)
     
     item_text_inputs = {
         key: pad_sequence([x[key] for x in item_text_inputs], batch_first=True) 
@@ -105,4 +109,6 @@ def custom_collate_fn(batch):
     item_ids = pad_sequence([x for x in item_ids], batch_first=True, padding_value=0)
     user_ids = torch.stack(user_ids)
     
-    return item_text_inputs, user_text_inputs, item_ids, user_ids
+    categories = torch.tensor([cat for cat in categories])
+    
+    return item_text_inputs, user_text_inputs, item_ids, user_ids, categories

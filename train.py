@@ -72,13 +72,7 @@ def train_model(config_path='configs/config.yaml'):
     trainer = Trainer(model, train_loader, val_loader, optimizer, config)
     
     # Training loop
-    for epoch in range(config['training']['epochs']):
-        print(f"\nEpoch {epoch + 1}/{config['training']['epochs']}")
-        metrics = trainer.train_epoch()
-        
-        print(f"Average Loss: {metrics['loss']:.4f}")
-        print(f"Contrastive Loss: {metrics['contrastive_loss']:.4f}")
-        print(f"Recommendation Loss: {metrics['recommendation_loss']:.4f}")
+    metrics = trainer.train(config['training']['epochs'])
 
 if __name__ == "__main__":
     train_model()
