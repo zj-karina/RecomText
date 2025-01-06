@@ -49,26 +49,33 @@ class BuildTrainDataset(Dataset):
         
         # Преобразуем список категорий в one-hot вектор
         categories = self.categories[idx]
-        if isinstance(categories, list):
-            # Если categories - список, берем первую категорию
-            category = categories[0] if categories else 'unknown'
+        
+        # Обработка различных форматов категорий
+        if isinstance(categories, (list, np.ndarray)):
+            category = categories[0] if len(categories) > 0 else 'unknown'
         else:
-            category = categories
+            category = str(categories) if pd.notna(categories) else 'unknown'
             
         # Преобразуем категорию в числовой формат
         if not hasattr(self, 'category_map'):
             # Создаем маппинг категорий при первом использовании
             unique_categories = set()
             for cats in self.categories:
-                if isinstance(cats, list):
-                    unique_categories.update(cats)  # Используем update для списков
+                if isinstance(cats, (list, np.ndarray)):
+                    # Для списков и numpy массивов
+                    if len(cats) > 0:
+                        unique_categories.add(str(cats[0]))
                 else:
-                    unique_categories.add(cats)  # Используем add для строк
+                    # Для строк и других типов
+                    if pd.notna(cats):
+                        unique_categories.add(str(cats))
             
+            # Добавляем категорию unknown если её нет
+            unique_categories.add('unknown')
             self.category_map = {cat: idx for idx, cat in enumerate(sorted(unique_categories))}
-            
+        
         # Получаем числовой индекс категории
-        category_idx = self.category_map.get(category, self.category_map.get('unknown', 0))
+        category_idx = self.category_map.get(str(category), self.category_map['unknown'])
         
         # Convert item_ids to numeric format
         if isinstance(item_ids, (list, np.ndarray)):
