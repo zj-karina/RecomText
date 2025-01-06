@@ -51,7 +51,6 @@ class BuildTrainDataset(Dataset):
         categories = self.categories[idx]
         if isinstance(categories, list):
             # Если categories - список, берем первую категорию
-            # или можно использовать другую логику агрегации
             category = categories[0] if categories else 'unknown'
         else:
             category = categories
@@ -62,12 +61,14 @@ class BuildTrainDataset(Dataset):
             unique_categories = set()
             for cats in self.categories:
                 if isinstance(cats, list):
-                    unique_categories.update(cats)
+                    unique_categories.update(cats)  # Используем update для списков
                 else:
-                    unique_categories.add(cats)
+                    unique_categories.add(cats)  # Используем add для строк
+            
             self.category_map = {cat: idx for idx, cat in enumerate(sorted(unique_categories))}
             
-        category_idx = self.category_map.get(category, len(self.category_map) - 1)  # последний индекс для unknown
+        # Получаем числовой индекс категории
+        category_idx = self.category_map.get(category, self.category_map.get('unknown', 0))
         
         # Convert item_ids to numeric format
         if isinstance(item_ids, (list, np.ndarray)):
