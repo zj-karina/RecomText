@@ -103,60 +103,61 @@ class Trainer:
                 items_embeddings = F.normalize(items_embeddings, p=2, dim=1)
                 user_embeddings = F.normalize(user_embeddings, p=2, dim=1)
 
-                # Вычисление лоссов
+                # Вычисляем ground truth для текущего батча
+                batch_size = user_embeddings.size(0)
+                ground_truth = torch.zeros(batch_size, batch_size, device=self.device)
+                ground_truth[torch.arange(batch_size), torch.arange(batch_size)] = 1
+
+                # Сохраняем результаты
+                all_user_embeddings.append(user_embeddings)
+                all_item_embeddings.append(items_embeddings)
+                all_ground_truth.append(ground_truth)
+                all_categories.append(categories)
+
+                # Вычисляем потери
                 recommendation_loss = self.compute_recommendation_loss(
                     user_embeddings, items_embeddings
                 )
                 contrastive_loss = self.compute_contrastive_loss(
                     items_embeddings, user_embeddings
                 )
-                loss = contrastive_loss + self.config['training']['lambda_rec'] * recommendation_loss
 
-                # Накопление лоссов
-                val_loss += loss.item()
                 val_contrastive_loss += contrastive_loss.item()
                 val_recommendation_loss += recommendation_loss.item()
+                val_loss += (contrastive_loss + self.config['training']['lambda_rec'] * recommendation_loss).item()
 
-                # Сохранение эмбеддингов и меток для подсчета метрик
-                all_user_embeddings.append(user_embeddings)
-                all_item_embeddings.append(items_embeddings)
-                all_categories.append(categories)
-                
-                # Создаем ground truth матрицу для текущего батча
-                batch_size = user_embeddings.size(0)
-                ground_truth = torch.eye(batch_size, device=self.device)
-                all_ground_truth.append(ground_truth)
-
-        # Усреднение лоссов
+        # Вычисляем средние потери
         num_batches = len(self.val_loader)
-        val_metrics = {
-            'val_loss': val_loss / num_batches,
-            'val_contrastive_loss': val_contrastive_loss / num_batches,
-            'val_recommendation_loss': val_recommendation_loss / num_batches
-        }
+        val_loss /= num_batches
+        val_contrastive_loss /= num_batches
+        val_recommendation_loss /= num_batches
 
-        # Объединение всех тензоров
-        user_embeddings = torch.cat(all_user_embeddings, dim=0)
-        item_embeddings = torch.cat(all_item_embeddings, dim=0)
-        ground_truth = torch.cat(all_ground_truth, dim=0)
-        categories = torch.cat(all_categories, dim=0)
+        # Объединяем эмбеддинги и ground truth только для полных батчей
+        max_batch_size = all_ground_truth[0].size(0)  # размер полного батча
+        
+        # Фильтруем только батчи полного размера
+        filtered_user_embeddings = [emb for emb in all_user_embeddings if emb.size(0) == max_batch_size]
+        filtered_item_embeddings = [emb for emb in all_item_embeddings if emb.size(0) == max_batch_size]
+        filtered_ground_truth = [gt for gt in all_ground_truth if gt.size(0) == max_batch_size]
+        filtered_categories = [cat for cat in all_categories if cat.size(0) == max_batch_size]
 
-        # Вычисление предсказаний
-        predictions = torch.matmul(user_embeddings, item_embeddings.T)
+        # Объединяем отфильтрованные тензоры
+        user_embeddings = torch.cat(filtered_user_embeddings, dim=0)
+        item_embeddings = torch.cat(filtered_item_embeddings, dim=0)
+        ground_truth = torch.cat(filtered_ground_truth, dim=0)
+        categories = torch.cat(filtered_categories, dim=0)
+
+        # Вычисляем метрики
+        metrics = compute_metrics(user_embeddings, item_embeddings, ground_truth, self.ks)
         
-        # Вычисление метрик качества
-        ranking_metrics = self.metrics_calculator.compute_metrics(
-            predictions=predictions,
-            ground_truth=ground_truth,
-            categories=categories,
-            item_embeddings=item_embeddings,
-            ks=self.ks
-        )
-        
-        # Объединение всех метрик
-        val_metrics.update({f'val_{k}': v for k, v in ranking_metrics.items()})
-        
-        return val_metrics
+        # Добавляем потери к метрикам
+        metrics.update({
+            'val_loss': val_loss,
+            'val_contrastive_loss': val_contrastive_loss,
+            'val_recommendation_loss': val_recommendation_loss
+        })
+
+        return metrics
 
     def _save_checkpoint(self, epoch, metrics):
         """Сохранение чекпоинта модели."""

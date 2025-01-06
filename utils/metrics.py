@@ -1,104 +1,88 @@
 import torch
 import numpy as np
 from typing import Dict, List, Union, Tuple
+from scipy.spatial.distance import pdist, squareform
 
 class MetricsCalculator:
-    """Калькулятор метрик для рекомендательной системы."""
+    """Калькулятор метрик для рекомендательной системы с учетом категорий."""
     
     @staticmethod
-    def precision_at_k(predictions: torch.Tensor, ground_truth: torch.Tensor, k: int) -> float:
+    def precision_at_k(predictions: torch.Tensor, 
+                      ground_truth: torch.Tensor, 
+                      categories: torch.Tensor,
+                      k: int) -> float:
         """
-        Вычисляет Precision@K.
+        Вычисляет Precision@K с учетом категорий.
         
         Args:
-            predictions: Тензор предсказанных рейтингов или скоров (batch_size x n_items)
+            predictions: Тензор предсказанных рейтингов (batch_size x n_items)
             ground_truth: Тензор истинных значений (batch_size x n_items)
-            k: Количество топ-элементов для рассмотрения
-        
-        Returns:
-            float: Значение метрики Precision@K
-        """
-        _, top_k_indices = torch.topk(predictions, k, dim=1)
-        relevant_items_in_k = torch.gather(ground_truth, 1, top_k_indices).sum(dim=1)
-        return (relevant_items_in_k / k).mean().item()
-
-    @staticmethod
-    def recall_at_k(predictions: torch.Tensor, ground_truth: torch.Tensor, k: int) -> float:
-        """
-        Вычисляет Recall@K.
-        
-        Args:
-            predictions: Тензор предсказанных рейтингов
-            ground_truth: Тензор истинных значений
+            categories: Тензор категорий товаров (n_items)
             k: Количество топ-элементов
-        
-        Returns:
-            float: Значение метрики Recall@K
         """
         _, top_k_indices = torch.topk(predictions, k, dim=1)
-        relevant_items_in_k = torch.gather(ground_truth, 1, top_k_indices).sum(dim=1)
-        total_relevant = ground_truth.sum(dim=1)
-        return (relevant_items_in_k / total_relevant.clamp(min=1)).mean().item()
+        
+        # Получаем категории для топ-k предсказаний
+        pred_categories = categories[top_k_indices]
+        
+        # Получаем категории истинных товаров
+        true_categories = categories[ground_truth.bool()]
+        
+        # Считаем совпадения по категориям
+        matches = (pred_categories.unsqueeze(2) == true_categories.unsqueeze(1)).any(dim=2)
+        
+        return matches.float().mean(dim=1).mean().item()
 
     @staticmethod
-    def ndcg_at_k(predictions: torch.Tensor, ground_truth: torch.Tensor, k: int) -> float:
+    def coverage(predictions: torch.Tensor, 
+                categories: torch.Tensor,
+                k: int) -> float:
         """
-        Вычисляет Normalized Discounted Cumulative Gain (NDCG@K).
+        Вычисляет покрытие категорий в топ-k рекомендациях.
         
         Args:
             predictions: Тензор предсказанных рейтингов
-            ground_truth: Тензор истинных значений
+            categories: Тензор категорий товаров
             k: Количество топ-элементов
-        
-        Returns:
-            float: Значение метрики NDCG@K
         """
-        # Получаем топ-k предсказаний
         _, top_k_indices = torch.topk(predictions, k, dim=1)
+        recommended_categories = categories[top_k_indices]
+        unique_categories = torch.unique(recommended_categories)
+        total_categories = torch.unique(categories)
         
-        # Получаем релевантность для топ-k элементов
-        actual_relevance = torch.gather(ground_truth, 1, top_k_indices)
-        
-        # Вычисляем идеальный DCG
-        ideal_relevance, _ = torch.sort(ground_truth, dim=1, descending=True)
-        ideal_relevance = ideal_relevance[:, :k]
-        
-        # Вычисляем коэффициенты дисконтирования
-        position_discount = 1 / torch.log2(torch.arange(k, device=predictions.device) + 2)
-        
-        # Вычисляем DCG и IDCG
-        dcg = (actual_relevance * position_discount).sum(dim=1)
-        idcg = (ideal_relevance * position_discount).sum(dim=1)
-        
-        return (dcg / idcg.clamp(min=1e-8)).mean().item()
+        return len(unique_categories) / len(total_categories)
 
     @staticmethod
-    def mean_reciprocal_rank(predictions: torch.Tensor, ground_truth: torch.Tensor) -> float:
+    def intra_list_diversity(predictions: torch.Tensor,
+                            item_embeddings: torch.Tensor,
+                            k: int) -> float:
         """
-        Вычисляет Mean Reciprocal Rank (MRR).
+        Вычисляет внутреннее разнообразие в списках рекомендаций.
         
         Args:
             predictions: Тензор предсказанных рейтингов
-            ground_truth: Тензор истинных значений
-        
-        Returns:
-            float: Значение метрики MRR
+            item_embeddings: Эмбеддинги товаров
+            k: Количество топ-элементов
         """
-        # Получаем ранги для всех элементов
-        _, indices = torch.sort(predictions, dim=1, descending=True)
-        ranks = torch.zeros_like(indices)
-        ranks.scatter_(1, indices, torch.arange(predictions.size(1), device=predictions.device).expand_as(indices) + 1)
+        _, top_k_indices = torch.topk(predictions, k, dim=1)
         
-        # Находим ранг первого релевантного элемента
-        relevant_ranks = ranks[ground_truth.bool()]
-        first_relevant_ranks = relevant_ranks.view(-1, relevant_ranks.size(-1))[:, 0]
-        
-        return (1.0 / first_relevant_ranks).mean().item()
+        diversities = []
+        for indices in top_k_indices:
+            embeddings = item_embeddings[indices]
+            similarities = torch.matmul(embeddings, embeddings.T)
+            # Убираем диагональные элементы
+            mask = torch.ones_like(similarities) - torch.eye(k, device=similarities.device)
+            diversity = (similarities * mask).sum() / (k * (k - 1))
+            diversities.append(1 - diversity.item())  # Конвертируем сходство в разнообразие
+            
+        return np.mean(diversities)
 
     def compute_metrics(
         self, 
-        predictions: torch.Tensor, 
-        ground_truth: torch.Tensor, 
+        predictions: torch.Tensor,
+        ground_truth: torch.Tensor,
+        categories: torch.Tensor,
+        item_embeddings: torch.Tensor,
         ks: List[int] = [1, 5, 10]
     ) -> Dict[str, float]:
         """
@@ -107,43 +91,31 @@ class MetricsCalculator:
         Args:
             predictions: Тензор предсказанных рейтингов
             ground_truth: Тензор истинных значений
+            categories: Тензор категорий товаров
+            item_embeddings: Эмбеддинги товаров
             ks: Список значений k для вычисления метрик @K
-        
-        Returns:
-            Dict[str, float]: Словарь с результатами всех метрик
         """
         metrics = {}
         
         for k in ks:
-            metrics[f'precision@{k}'] = self.precision_at_k(predictions, ground_truth, k)
-            metrics[f'recall@{k}'] = self.recall_at_k(predictions, ground_truth, k)
-            metrics[f'ndcg@{k}'] = self.ndcg_at_k(predictions, ground_truth, k)
+            metrics[f'precision@{k}'] = self.precision_at_k(
+                predictions, ground_truth, categories, k
+            )
+            metrics[f'recall@{k}'] = self.recall_at_k(
+                predictions, ground_truth, categories, k
+            )
+            metrics[f'ndcg@{k}'] = self.ndcg_at_k(
+                predictions, ground_truth, categories, k
+            )
+            metrics[f'coverage@{k}'] = self.coverage(
+                predictions, categories, k
+            )
+            metrics[f'diversity@{k}'] = self.intra_list_diversity(
+                predictions, item_embeddings, k
+            )
         
-        metrics['mrr'] = self.mean_reciprocal_rank(predictions, ground_truth)
+        metrics['mrr'] = self.mean_reciprocal_rank(
+            predictions, ground_truth, categories
+        )
         
-        return metrics
-
-def compute_metrics(user_embeddings: torch.Tensor, 
-                   item_embeddings: torch.Tensor, 
-                   ground_truth: torch.Tensor,
-                   ks: List[int] = [1, 5, 10]) -> Dict[str, float]:
-    """
-    Вычисляет метрики для эмбеддингов пользователей и товаров.
-    
-    Args:
-        user_embeddings: Нормализованные эмбеддинги пользователей
-        item_embeddings: Нормализованные эмбеддинги товаров
-        ground_truth: Тензор истинных значений
-        ks: Список значений k для вычисления метрик @K
-    
-    Returns:
-        Dict[str, float]: Словарь с результатами метрик
-    """
-    # Вычисляем предсказания как косинусную схожесть между эмбеддингами
-    predictions = torch.matmul(user_embeddings, item_embeddings.T)
-    
-    # Инициализируем калькулятор метрик
-    calculator = MetricsCalculator()
-    
-    # Вычисляем все метрики
-    return calculator.compute_metrics(predictions, ground_truth, ks)
+        return metrics 
