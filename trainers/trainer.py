@@ -82,104 +82,73 @@ class Trainer:
         val_contrastive_loss = 0
         val_recommendation_loss = 0
         
-        # Сначала соберем все item embeddings
-        all_item_embeddings = []
-        all_user_embeddings = []
-        all_categories = []
-        
-        # Первый проход - собираем все item embeddings
         with torch.no_grad():
-            for batch in tqdm(self.val_loader, desc="Collecting items"):
-                items_text_inputs, _, item_ids, _, categories = [
+            for batch in tqdm(self.val_loader, desc="Validating"):
+                items_text_inputs, user_text_inputs, item_ids, user_ids, categories = [
                     self.to_device(x) for x in batch
                 ]
-                
-                # Forward pass только для items
-                items_embeddings, _ = self.model(
-                    items_text_inputs, items_text_inputs, item_ids, item_ids
+
+                # Forward pass
+                items_embeddings, user_embeddings = self.model(
+                    items_text_inputs, user_text_inputs, item_ids, user_ids
                 )
-                
+
                 # Нормализация эмбеддингов
                 items_embeddings = F.normalize(items_embeddings, p=2, dim=1)
-                
-                all_item_embeddings.append(items_embeddings)
-                all_categories.append(categories)
-        
-        # Объединяем все item embeddings
-        item_embeddings = torch.cat(all_item_embeddings, dim=0)  # [n_items, embed_dim]
-        all_categories = torch.cat(all_categories, dim=0)  # [n_items]
-        
-        print(f"Total items collected: {item_embeddings.shape}")
-        
-        # Второй проход - для каждого пользователя вычисляем схожесть со всеми items
-        all_predictions = []
-        all_ground_truth = []
-        
-        with torch.no_grad():
-            for batch in tqdm(self.val_loader, desc="Computing similarities"):
-                _, user_text_inputs, _, user_ids, _ = [
-                    self.to_device(x) for x in batch
-                ]
-                
-                # Forward pass для users
-                _, user_embeddings = self.model(
-                    user_text_inputs, user_text_inputs, user_ids, user_ids
-                )
-                
-                # Нормализация эмбеддингов
                 user_embeddings = F.normalize(user_embeddings, p=2, dim=1)
-                
-                # Вычисляем схожесть с ВСЕМИ items
-                batch_predictions = F.cosine_similarity(
-                    user_embeddings.unsqueeze(1),  # [batch_size, 1, embed_dim]
-                    item_embeddings.unsqueeze(0),  # [1, n_items, embed_dim]
-                    dim=2
-                )  # [batch_size, n_items]
-                
-                # Создаем ground truth (предполагаем, что правильный item находится в той же позиции в батче)
+
                 batch_size = user_embeddings.size(0)
-                ground_truth = torch.zeros(batch_size, item_embeddings.size(0), device=self.device)
+                
+                # Вычисляем схожесть каждого пользователя со всеми items
+                predictions = []
+                for user_emb in user_embeddings:
+                    # Расширяем размерность для пользователя
+                    user_emb = user_emb.unsqueeze(0)  # [1, embed_dim]
+                    
+                    # Вычисляем схожесть с каждым item
+                    user_predictions = F.cosine_similarity(
+                        user_emb.unsqueeze(0),  # [1, 1, embed_dim]
+                        items_embeddings.unsqueeze(0),  # [1, n_items, embed_dim]
+                        dim=2
+                    )  # [1, n_items]
+                    predictions.append(user_predictions.squeeze(0))
+                
+                # Объединяем предсказания для всех пользователей
+                predictions = torch.stack(predictions)  # [batch_size, n_items]
+                
+                # Создаем ground truth
+                ground_truth = torch.zeros(batch_size, items_embeddings.size(0), device=self.device)
                 ground_truth[torch.arange(batch_size), torch.arange(batch_size)] = 1
-                
-                all_predictions.append(batch_predictions)
-                all_ground_truth.append(ground_truth)
-                
+
                 # Вычисляем потери
                 recommendation_loss = self.compute_recommendation_loss(
-                    user_embeddings, item_embeddings[:batch_size]
+                    user_embeddings, items_embeddings
                 )
                 contrastive_loss = self.compute_contrastive_loss(
-                    item_embeddings[:batch_size], user_embeddings
+                    items_embeddings, user_embeddings
                 )
-                
+
                 val_contrastive_loss += contrastive_loss.item()
                 val_recommendation_loss += recommendation_loss.item()
                 val_loss += (contrastive_loss + self.config['training']['lambda_rec'] * recommendation_loss).item()
-        
-        # Объединяем все предсказания
-        predictions = torch.cat(all_predictions, dim=0)  # [n_users, n_items]
-        ground_truth = torch.cat(all_ground_truth, dim=0)  # [n_users, n_items]
-        
-        print(f"Final predictions shape: {predictions.shape}")
-        print(f"Final ground truth shape: {ground_truth.shape}")
-        
-        # Вычисляем метрики
-        metrics = self.metrics_calculator.compute_metrics(
-            predictions=predictions,
-            ground_truth=ground_truth,
-            categories=all_categories,
-            item_embeddings=item_embeddings,
-            ks=self.ks
-        )
-        
-        # Добавляем потери к метрикам
+
+                # Вычисляем метрики
+                metrics = self.metrics_calculator.compute_metrics(
+                    predictions=predictions,
+                    ground_truth=ground_truth,
+                    categories=categories,
+                    item_embeddings=items_embeddings,
+                    ks=self.ks
+                )
+
+        # Усредняем потери
         num_batches = len(self.val_loader)
         metrics.update({
             'val_loss': val_loss / num_batches,
             'val_contrastive_loss': val_contrastive_loss / num_batches,
             'val_recommendation_loss': val_recommendation_loss / num_batches
         })
-        
+
         return metrics
 
     def _save_checkpoint(self, epoch, metrics):
