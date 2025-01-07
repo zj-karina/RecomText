@@ -147,9 +147,16 @@ class Trainer:
         ground_truth = torch.cat(filtered_ground_truth, dim=0)
         categories = torch.cat(filtered_categories, dim=0)
 
-        # Вычисляем метрики используя MetricsCalculator
+        # Вычисляем косинусную схожесть
+        predictions = F.cosine_similarity(
+            user_embeddings.unsqueeze(1),  # [batch_size, 1, embed_dim]
+            item_embeddings.unsqueeze(0),  # [1, batch_size, embed_dim]
+            dim=2
+        )
+
+        # Вычисляем метрики
         metrics = self.metrics_calculator.compute_metrics(
-            predictions=torch.matmul(user_embeddings, item_embeddings.T),
+            predictions=predictions,
             ground_truth=ground_truth,
             categories=categories,
             item_embeddings=item_embeddings,
