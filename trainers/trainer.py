@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from utils.losses import get_losses
 from utils.metrics import MetricsCalculator
+import os
 
 class Trainer:
     def __init__(self, model, train_loader, val_loader, optimizer, config):
@@ -153,15 +154,28 @@ class Trainer:
 
     def _save_checkpoint(self, epoch, metrics):
         """Сохранение чекпоинта модели."""
-        checkpoint = {
+        checkpoint_dir = self.config['training']['checkpoint_dir']
+        
+        # Создаем директорию, если её нет
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        
+        # Сохраняем модель в формате HuggingFace
+        self.model.save_pretrained(os.path.join(checkpoint_dir, f'model_epoch_{epoch}'))
+        
+        # Сохраняем дополнительные данные
+        checkpoint_meta = {
             'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'metrics': metrics,
-            'best_metric': self.best_metric
+            'best_metric': self.best_metric,
+            'config': self.config  # Сохраняем конфиг для воспроизводимости
         }
-        torch.save(checkpoint, f'checkpoints/model_epoch_{epoch}.pt')
-        print(f"\nSaved checkpoint for epoch {epoch}")
+        
+        # Сохраняем метаданные отдельно
+        meta_path = os.path.join(checkpoint_dir, f'meta_epoch_{epoch}.pt')
+        torch.save(checkpoint_meta, meta_path)
+        
+        print(f"\nSaved checkpoint for epoch {epoch} in {checkpoint_dir}")
 
     def _print_metrics(self, metrics):
         """Вывод метрик в консоль."""

@@ -8,8 +8,17 @@ data:
   batch_size: 32
 
 training:
-  epochs: 1
-  learning_rate: 5e-5
-  lambda_rec: 0.2
-  validation_size: 0.1
-  random_seed: 42
+  epochs: 10
+  batch_size: 32
+  learning_rate: 0.001
+  lambda_rec: 0.5
+  checkpoint_dir: "checkpoints"  # Базовая директория для чекпоинтов
+  save_strategy: "epoch"         # Когда сохранять: "epoch" или "best"
+  save_steps: 1                  # Сохранять каждые N эпох
+  save_total_limit: 3           # Максимальное количество сохраняемых чекпоинтов 
+
+inference:
+  model_path: "checkpoints/model_epoch_10"  # Путь к директории с моделью
+  batch_size: 32
+  num_examples: 5  # Количество примеров для показа
+  top_k: 10       # Количество рекомендаций для каждого пользователя 

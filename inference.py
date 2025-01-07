@@ -1,10 +1,12 @@
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModel
 from utils.mappings import load_mappings
 from tqdm import tqdm
 from data.dataset import BuildTrainDataset
 from torch.utils.data import DataLoader
+import os
+import yaml
 
 def evaluate_predictions(model, val_loader, device, k=10, num_examples=5):
     """
@@ -67,27 +69,63 @@ def evaluate_predictions(model, val_loader, device, k=10, num_examples=5):
                 
             break  # Выходим после первого батча
 
-if __name__ == "__main__":
-    # Загрузка необходимых компонентов
-    model_path = "path/to/your/model.pt"
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def load_model(model_path, device):
+    """
+    Load model from HuggingFace format checkpoint.
     
-    # Загрузка модели
-    model = torch.load(model_path)
+    Args:
+        model_path: Path to the saved model directory
+        device: Torch device
+    """
+    # Загружаем модель
+    model = AutoModel.from_pretrained(model_path)
     model.to(device)
     model.eval()
     
+    # Загружаем метаданные если нужно
+    meta_path = os.path.join(os.path.dirname(model_path), 
+                            f'meta_{os.path.basename(model_path)}.pt')
+    meta_data = None
+    if os.path.exists(meta_path):
+        meta_data = torch.load(meta_path)
+    
+    return model, meta_data
+
+def load_config(config_path="config/config.yaml"):
+    """Load configuration from yaml file."""
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
+
+if __name__ == "__main__":
+    # Загрузка конфигурации
+    config = load_config()
+    
+    # Получение параметров из конфига
+    model_path = config['inference']['model_path']
+    batch_size = config['inference']['batch_size']
+    num_examples = config['inference']['num_examples']
+    top_k = config['inference']['top_k']
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Загрузка модели
+    model, meta_data = load_model(model_path, device)
+    
+    # Если нужно, можно использовать метаданные
+    if meta_data:
+        print(f"Model was trained for {meta_data['epoch']} epochs")
+        print(f"Best metric: {meta_data['best_metric']}")
+    
     # Создание валидационного датасета и лоадера
     val_dataset = BuildTrainDataset(
-        # Добавьте ваши параметры для датасета
         split='val'
     )
     
     val_loader = DataLoader(
         val_dataset,
-        batch_size=32,
+        batch_size=batch_size,
         shuffle=False
     )
     
     # Оценка предсказаний
-    evaluate_predictions(model, val_loader, device, k=10, num_examples=5) 
+    evaluate_predictions(model, val_loader, device, k=top_k, num_examples=num_examples) 
