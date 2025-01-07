@@ -1,7 +1,6 @@
 import torch
 import numpy as np
 from typing import Dict, List, Union, Tuple
-from scipy.spatial.distance import pdist, squareform
 
 class MetricsCalculator:
     """Калькулятор метрик для рекомендательной системы с учетом категорий."""
@@ -13,25 +12,66 @@ class MetricsCalculator:
                       k: int) -> float:
         """
         Вычисляет Precision@K с учетом категорий.
-        
-        Args:
-            predictions: Тензор предсказанных рейтингов (batch_size x n_items)
-            ground_truth: Тензор истинных значений (batch_size x n_items)
-            categories: Тензор категорий товаров (n_items)
-            k: Количество топ-элементов
         """
+        batch_size = predictions.size(0)
         _, top_k_indices = torch.topk(predictions, k, dim=1)
         
-        # Получаем категории для топ-k предсказаний
         pred_categories = categories[top_k_indices]
+        true_indices = torch.arange(batch_size, device=predictions.device)
+        true_categories = categories[true_indices].unsqueeze(1)
         
-        # Получаем категории истинных товаров
-        true_categories = categories[ground_truth.bool()]
+        matches = (pred_categories == true_categories)
+        precision = matches.float().mean(dim=1)
         
-        # Считаем совпадения по категориям
-        matches = (pred_categories.unsqueeze(2) == true_categories.unsqueeze(1)).any(dim=2)
+        return precision.mean().item()
+
+    @staticmethod
+    def recall_at_k(predictions: torch.Tensor, 
+                    ground_truth: torch.Tensor, 
+                    categories: torch.Tensor,
+                    k: int) -> float:
+        """
+        Вычисляет Recall@K с учетом категорий.
+        """
+        batch_size = predictions.size(0)
+        _, top_k_indices = torch.topk(predictions, k, dim=1)
         
-        return matches.float().mean(dim=1).mean().item()
+        pred_categories = categories[top_k_indices]
+        true_indices = torch.arange(batch_size, device=predictions.device)
+        true_categories = categories[true_indices].unsqueeze(1)
+        
+        matches = (pred_categories == true_categories)
+        recall = (matches.sum(dim=1) > 0).float()
+        
+        return recall.mean().item()
+
+    @staticmethod
+    def ndcg_at_k(predictions: torch.Tensor, 
+                  ground_truth: torch.Tensor, 
+                  categories: torch.Tensor,
+                  k: int) -> float:
+        """
+        Вычисляет NDCG@K с учетом категорий.
+        """
+        batch_size = predictions.size(0)
+        _, top_k_indices = torch.topk(predictions, k, dim=1)
+        
+        pred_categories = categories[top_k_indices]
+        true_indices = torch.arange(batch_size, device=predictions.device)
+        true_categories = categories[true_indices].unsqueeze(1)
+        
+        matches = (pred_categories == true_categories).float()
+        
+        # Вычисляем DCG
+        discounts = torch.log2(torch.arange(k, device=predictions.device) + 2.0)
+        dcg = (matches / discounts.unsqueeze(0)).sum(dim=1)
+        
+        # Вычисляем IDCG (идеальный DCG)
+        idcg = (1 / discounts[0]).unsqueeze(0).expand(batch_size)
+        
+        ndcg = dcg / idcg
+        
+        return ndcg.mean().item()
 
     @staticmethod
     def coverage(predictions: torch.Tensor, 
@@ -39,41 +79,31 @@ class MetricsCalculator:
                 k: int) -> float:
         """
         Вычисляет покрытие категорий в топ-k рекомендациях.
-        
-        Args:
-            predictions: Тензор предсказанных рейтингов
-            categories: Тензор категорий товаров
-            k: Количество топ-элементов
         """
         _, top_k_indices = torch.topk(predictions, k, dim=1)
         recommended_categories = categories[top_k_indices]
-        unique_categories = torch.unique(recommended_categories)
-        total_categories = torch.unique(categories)
+        unique_recommended = torch.unique(recommended_categories)
+        unique_total = torch.unique(categories)
         
-        return len(unique_categories) / len(total_categories)
+        return len(unique_recommended) / len(unique_total)
 
     @staticmethod
-    def intra_list_diversity(predictions: torch.Tensor,
-                            item_embeddings: torch.Tensor,
-                            k: int) -> float:
+    def diversity(predictions: torch.Tensor,
+                 item_embeddings: torch.Tensor,
+                 k: int) -> float:
         """
-        Вычисляет внутреннее разнообразие в списках рекомендаций.
-        
-        Args:
-            predictions: Тензор предсказанных рейтингов
-            item_embeddings: Эмбеддинги товаров
-            k: Количество топ-элементов
+        Вычисляет разнообразие рекомендаций на основе эмбеддингов.
         """
+        batch_size = predictions.size(0)
         _, top_k_indices = torch.topk(predictions, k, dim=1)
         
         diversities = []
         for indices in top_k_indices:
             embeddings = item_embeddings[indices]
             similarities = torch.matmul(embeddings, embeddings.T)
-            # Убираем диагональные элементы
             mask = torch.ones_like(similarities) - torch.eye(k, device=similarities.device)
-            diversity = (similarities * mask).sum() / (k * (k - 1))
-            diversities.append(1 - diversity.item())  # Конвертируем сходство в разнообразие
+            diversity = 1 - (similarities * mask).sum() / (k * (k - 1))
+            diversities.append(diversity.item())
             
         return np.mean(diversities)
 
@@ -87,13 +117,6 @@ class MetricsCalculator:
     ) -> Dict[str, float]:
         """
         Вычисляет все метрики для заданных k.
-        
-        Args:
-            predictions: Тензор предсказанных рейтингов
-            ground_truth: Тензор истинных значений
-            categories: Тензор категорий товаров
-            item_embeddings: Эмбеддинги товаров
-            ks: Список значений k для вычисления метрик @K
         """
         metrics = {}
         
@@ -110,12 +133,8 @@ class MetricsCalculator:
             metrics[f'coverage@{k}'] = self.coverage(
                 predictions, categories, k
             )
-            metrics[f'diversity@{k}'] = self.intra_list_diversity(
+            metrics[f'diversity@{k}'] = self.diversity(
                 predictions, item_embeddings, k
             )
-        
-        metrics['mrr'] = self.mean_reciprocal_rank(
-            predictions, ground_truth, categories
-        )
         
         return metrics 

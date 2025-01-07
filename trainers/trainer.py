@@ -147,8 +147,14 @@ class Trainer:
         ground_truth = torch.cat(filtered_ground_truth, dim=0)
         categories = torch.cat(filtered_categories, dim=0)
 
-        # Вычисляем метрики
-        metrics = compute_metrics(user_embeddings, item_embeddings, ground_truth, self.ks)
+        # Вычисляем метрики используя MetricsCalculator
+        metrics = self.metrics_calculator.compute_metrics(
+            predictions=torch.matmul(user_embeddings, item_embeddings.T),
+            ground_truth=ground_truth,
+            categories=categories,
+            item_embeddings=item_embeddings,
+            ks=self.ks
+        )
         
         # Добавляем потери к метрикам
         metrics.update({
