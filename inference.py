@@ -1,79 +1,93 @@
 import torch
+import torch.nn.functional as F
 from transformers import AutoTokenizer
 from utils.mappings import load_mappings
+from tqdm import tqdm
+from data.dataset import BuildTrainDataset
+from torch.utils.data import DataLoader
 
-def inference(text, user_id, model, tokenizer, mappings, device):
+def evaluate_predictions(model, val_loader, device, k=10, num_examples=5):
     """
-    Perform inference with the trained model.
+    Evaluate model predictions on validation set and show examples.
     
     Args:
-        text (str): Input text
-        user_id: User identifier
         model: Trained model
-        tokenizer: Tokenizer
-        mappings: ID mappings
+        val_loader: Validation data loader
         device: Torch device
-    
-    Returns:
-        predictions: Model predictions
+        k: Number of recommendations to show
+        num_examples: Number of user examples to show
     """
     model.eval()
+    
     with torch.no_grad():
-        # Convert input data
-        mapped_user_id = mappings['user_id_map'].get(user_id, mappings['unknown_user_idx'])
-        
-        # Tokenization
-        text_encoding = tokenizer(
-            text,
-            padding='max_length',
-            truncation=True,
-            max_length=128,
-            return_tensors="pt"
-        )
-        
-        # Move to device
-        text_encoding = {k: v.to(device) for k, v in text_encoding.items()}
-        user_id_tensor = torch.tensor([mapped_user_id], dtype=torch.long).to(device)
-        
-        # Get embeddings
-        items_embeddings, user_embeddings = model(
-            text_encoding,
-            text_encoding,  # use same text for user_text_inputs
-            user_id_tensor,
-            user_id_tensor
-        )
-        
-        # Get predictions (example: cosine similarity)
-        similarities = torch.nn.functional.cosine_similarity(
-            user_embeddings.unsqueeze(1),
-            items_embeddings.unsqueeze(0),
-            dim=2
-        )
-        
-        # Convert indices back to original IDs
-        predictions = [
-            mappings['reverse_item_id_map'][idx.item()]
-            for idx in torch.topk(similarities[0], k=10).indices
-        ]
-        
-        return predictions
+        # Возьмем один батч для примера
+        for batch in val_loader:
+            items_text_inputs, user_text_inputs, item_ids, user_ids, categories = [
+                x.to(device) for x in batch
+            ]
+
+            # Forward pass
+            items_embeddings, user_embeddings = model(
+                items_text_inputs, user_text_inputs, item_ids, user_ids
+            )
+
+            # Нормализация эмбеддингов
+            items_embeddings = F.normalize(items_embeddings, p=2, dim=1)
+            user_embeddings = F.normalize(user_embeddings, p=2, dim=1)
+
+            # Вычисляем схожесть для каждого пользователя
+            predictions = []
+            for user_emb in user_embeddings[:num_examples]:  # Берем только num_examples пользователей
+                user_emb = user_emb.unsqueeze(0)
+                user_predictions = F.cosine_similarity(
+                    user_emb.unsqueeze(0),
+                    items_embeddings.unsqueeze(0),
+                    dim=2
+                )
+                predictions.append(user_predictions.squeeze(0))
+            
+            predictions = torch.stack(predictions)  # [num_examples, n_items]
+            
+            # Получаем топ-k предсказаний для каждого пользователя
+            top_k_scores, top_k_indices = torch.topk(predictions, k=min(k, items_embeddings.size(0)))
+            
+            # Выводим результаты
+            print("\nPrediction Examples:")
+            for user_idx in range(min(num_examples, len(user_ids))):
+                print(f"\nUser {user_idx + 1}:")
+                print(f"User ID: {user_ids[user_idx].item()}")
+                print(f"User Text Input: {user_text_inputs['input_ids'][user_idx].tolist()}")  # Нужно декодировать через токенизатор
+                print("\nTop recommendations:")
+                
+                for rank, (score, idx) in enumerate(zip(top_k_scores[user_idx], top_k_indices[user_idx]), 1):
+                    print(f"{rank}. Item ID: {item_ids[idx].item()}")
+                    print(f"   Score: {score:.4f}")
+                    print(f"   Category: {categories[idx].item()}")
+                    print(f"   Text Input: {items_text_inputs['input_ids'][idx].tolist()}")  # Нужно декодировать через токенизатор
+                
+            break  # Выходим после первого батча
 
 if __name__ == "__main__":
-    # Пример использования
-    model_path = "path/to/saved/model"
-    mappings = load_mappings()
-    
+    # Загрузка необходимых компонентов
+    model_path = "path/to/your/model.pt"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Загрузка модели и токенизатора
+    # Загрузка модели
     model = torch.load(model_path)
     model.to(device)
+    model.eval()
     
-    tokenizer = AutoTokenizer.from_pretrained("/storage/kromanova/models/multilingual-e5-large")
+    # Создание валидационного датасета и лоадера
+    val_dataset = BuildTrainDataset(
+        # Добавьте ваши параметры для датасета
+        split='val'
+    )
     
-    # Пример инференса
-    text = "example text"
-    user_id = "example_user_id"
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=32,
+        shuffle=False
+    )
     
-    predictions = inference(text, user_id, model, tokenizer, mappings, device)
-    print(f"Top predictions: {predictions}") 
+    # Оценка предсказаний
+    evaluate_predictions(model, val_loader, device, k=10, num_examples=5) 
