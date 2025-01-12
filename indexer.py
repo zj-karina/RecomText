@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import yaml
+import json
 
 from transformers import AutoTokenizer, AutoModel
 from torch.utils.data import Dataset, DataLoader
@@ -16,12 +17,10 @@ class VideoInfoDataset(Dataset):
     """
     Датасет для индексирования товаров (rutube_video_id + title).
     """
-    def __init__(self, df, tokenizer, max_length=128):
-        """
-        df: DataFrame с колонками [rutube_video_id, title, ...]
-        """
+    def __init__(self, df, tokenizer, item_id_map, max_length=128):
         self.df = df.reset_index(drop=True)
         self.tokenizer = tokenizer
+        self.item_id_map = item_id_map
         self.max_length = max_length
 
     def __len__(self):
@@ -29,7 +28,13 @@ class VideoInfoDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        item_id = int(row['rutube_video_id'])
+        original_id = str(row['clean_video_id'])  # Используем clean_video_id для соответствия с обучением
+        
+        # Преобразуем video_id в индекс
+        if original_id not in self.item_id_map:
+            raise ValueError(f"Unknown item_id: {original_id}")
+        mapped_item_id = self.item_id_map[original_id]
+
         title = str(row['title'])
 
         tokens = self.tokenizer(
@@ -39,10 +44,9 @@ class VideoInfoDataset(Dataset):
             max_length=self.max_length,
             return_tensors="pt"
         )
-        # Из batch=1 в обычный вид [seq_len]
         tokens = {k: v.squeeze(0) for k, v in tokens.items()}
-        
-        return tokens, item_id
+
+        return tokens, mapped_item_id
 
 def collate_fn(batch):
     """
@@ -73,6 +77,7 @@ def main():
     text_model_name = config['model']['text_model_name']
     batch_size = config['data']['batch_size']
     max_length = config['data']['max_length']
+    checkpoint_dir = config['training']['checkpoint_dir']
     index_path = config['inference'].get('index_path', 'video_index.faiss')
     ids_path = config['inference'].get('ids_path', 'video_ids.npy')
     
@@ -84,34 +89,26 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(text_model_name)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Загружаем маппинги
+    mappings_path = os.path.join(config['training']['checkpoint_dir'], 'mappings', 'item_id_map.json')
+    if not os.path.exists(mappings_path):
+        raise FileNotFoundError(f"item_id_map not found at {mappings_path}")
+        
+    with open(mappings_path, 'r', encoding='utf-8') as f:
+        item_id_map = json.load(f)
+    print(f"Loaded item_id_map with {len(item_id_map)} items")
+
     # 4) Создаем датасет для индексации
-    dataset = VideoInfoDataset(df_videos, tokenizer, max_length=max_length)
+    dataset = VideoInfoDataset(
+        df=df_videos,
+        tokenizer=tokenizer,
+        item_id_map=item_id_map,
+        max_length=max_length
+    )
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
     # 5) Инициализируем модель с размерами из датасета
-    model = MultimodalRecommendationModel(
-        text_model_name=text_model_name,
-        user_vocab_size=len(dataset.user_id_map),
-        items_vocab_size=len(dataset.item_id_map),
-        id_embed_dim=config['model']['id_embed_dim'],
-        text_embed_dim=config['model']['text_embed_dim']
-    )
-
-    # Загрузка обученных весов
-    if os.path.exists(model_path):
-        print(f"Loading model from {model_path}")
-        # Загружаем модель в формате HuggingFace
-        model.text_model = AutoModel.from_pretrained(model_path)
-        
-        # Загружаем метаданные
-        meta_path = os.path.join(os.path.dirname(model_path), 
-                                f'meta_{os.path.basename(model_path)}.pt')
-        if os.path.exists(meta_path):
-            checkpoint_meta = torch.load(meta_path, map_location="cpu")
-            print(f"Loaded metadata from epoch {checkpoint_meta['epoch']}")
-            print(f"Best metric: {checkpoint_meta['best_metric']}")
-    else:
-        raise FileNotFoundError(f"Model not found at {model_path}")
+    model = MultimodalRecommendationModel.from_pretrained(checkpoint_dir)
 
     model.to(device)
     model.eval()
