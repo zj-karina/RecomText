@@ -141,6 +141,9 @@ def create_video_info_table(video_df: pd.DataFrame) -> pd.DataFrame:
     # Подготавливаем таблицу
     video_info = video_df[['rutube_video_id', 'title', 'category']].copy()
     
+    # Убираем префикс 'video_' из rutube_video_id
+    video_info['rutube_video_id'] = video_info['rutube_video_id'].str.replace('video_', '')
+    
     # Добавляем числовой ID категории
     video_info['category_id'] = video_info['category'].map(category_to_id)
     
@@ -189,8 +192,6 @@ def main():
     detailed_history_df = create_detailed_user_history(result_with_video_info)
     user_descriptions = create_user_description(targets)
 
-    print(detailed_history_df)
-    
     # Save results
     detailed_history_df.to_parquet('./data/textual_history.parquet')
     user_history_df.to_parquet('./data/id_history.parquet')
