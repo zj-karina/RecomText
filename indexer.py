@@ -28,9 +28,8 @@ class VideoInfoDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        original_id = str(row['clean_video_id'])  # Используем clean_video_id для соответствия с обучением
+        original_id = str(row['rutube_video_id'])
         
-        # Преобразуем video_id в индекс
         if original_id not in self.item_id_map:
             raise ValueError(f"Unknown item_id: {original_id}")
         mapped_item_id = self.item_id_map[original_id]
@@ -46,7 +45,7 @@ class VideoInfoDataset(Dataset):
         )
         tokens = {k: v.squeeze(0) for k, v in tokens.items()}
 
-        return tokens, mapped_item_id
+        return tokens, torch.tensor([mapped_item_id], dtype=torch.long)
 
 def collate_fn(batch):
     """
@@ -57,7 +56,8 @@ def collate_fn(batch):
     input_ids = torch.stack([x['input_ids'] for x in tokens_list], dim=0)
     attention_mask = torch.stack([x['attention_mask'] for x in tokens_list], dim=0)
 
-    item_ids_tensor = torch.tensor(item_ids_list, dtype=torch.long)
+    # Преобразуем item_ids в двумерный тензор
+    item_ids_tensor = torch.stack([x.unsqueeze(0) for x in item_ids_list], dim=0)
 
     tokens_batch = {
         'input_ids': input_ids,
@@ -135,10 +135,10 @@ def main():
 
             # Прямой проход (только item_embeddings нам нужен)
             items_embeddings, _ = model(
-                items_text_inputs=tokens_batch,
-                user_text_inputs=dummy_user_inputs,
-                item_ids=item_ids_batch,
-                user_ids=dummy_user_ids
+                tokens_batch,
++               dummy_user_inputs,
++               item_ids_batch,
++               dummy_user_ids
             )
 
             # Нормируем для косинус-похожести

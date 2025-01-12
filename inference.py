@@ -105,28 +105,6 @@ def evaluate_predictions(model, val_loader, device, k=10, num_examples=5, tokeni
 
     print("Inference done.")
 
-def load_model(model_path, device):
-    """
-    Load model from HuggingFace format checkpoint.
-    
-    Args:
-        model_path: Path to the saved model directory
-        device: Torch device
-    """
-    # Загружаем модель
-    model = AutoModel.from_pretrained(model_path)
-    model.to(device)
-    model.eval()
-    
-    # Загружаем метаданные если нужно
-    meta_path = os.path.join(os.path.dirname(model_path), 
-                            f'meta_{os.path.basename(model_path)}.pt')
-    meta_data = None
-    if os.path.exists(meta_path):
-        meta_data = torch.load(meta_path)
-    
-    return model, meta_data
-
 def load_config(config_path="configs/config.yaml"):
     """Load configuration from yaml file."""
     with open(config_path, 'r') as f:
@@ -142,6 +120,7 @@ if __name__ == "__main__":
     num_examples = config['inference']['num_examples']
     top_k = config['inference']['top_k']
     max_length = config['data']['max_length']
+    checkpoint_dir = config['training']['checkpoint_dir']
 
     index_path = config['inference'].get('index_path', 'video_index.faiss')
     ids_path = config['inference'].get('ids_path', 'video_ids.npy')
@@ -156,13 +135,9 @@ if __name__ == "__main__":
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Загрузка модели
-    model, meta_data = load_model(model_path, device)
-    
-    # Если нужно, можно использовать метаданные
-    if meta_data:
-        print(f"Model was trained for {meta_data['epoch']} epochs")
-        print(f"Best metric: {meta_data['best_metric']}")
+    model = MultimodalRecommendationModel.from_pretrained(checkpoint_dir)
+
+    model.to(device)
     
     # Создание валидационного датасета и лоадера
     val_dataset = BuildTrainDataset(

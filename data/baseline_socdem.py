@@ -198,7 +198,7 @@ def main():
     user_descriptions.to_parquet('./data/user_descriptions.parquet')
 
     # Создаем таблицу для инференса
-    video_info = create_video_info_table(video)
+    video_info = create_video_info_table(result_with_video_info)
     video_info.to_parquet('./data/video_info.parquet')
 
 if __name__ == "__main__":
