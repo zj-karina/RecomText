@@ -1,31 +1,36 @@
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel
-from utils.mappings import load_mappings
 from tqdm import tqdm
-from data.dataset import BuildTrainDataset
+from data.dataset import BuildTrainDataset, get_dataloader
 from torch.utils.data import DataLoader
 import os
 import yaml
+import pandas as pd
 
-def evaluate_predictions(model, val_loader, device, k=10, num_examples=5):
+def to_device(data, device):
+    """
+    Переносит данные на указанное устройство.
+    Поддерживает словари, списки, кортежи и тензоры.
+    """
+    if isinstance(data, dict):
+        return {key: to_device(value, device) for key, value in data.items()}
+    elif isinstance(data, (list, tuple)):
+        return [to_device(x, device) for x in data]
+    elif hasattr(data, 'to'):  # Проверяем наличие метода to
+        return data.to(device)
+    return data
+
+def evaluate_predictions(model, val_loader, device, k=10, num_examples=5, tokenizer=None):
     """
     Evaluate model predictions on validation set and show examples.
-    
-    Args:
-        model: Trained model
-        val_loader: Validation data loader
-        device: Torch device
-        k: Number of recommendations to show
-        num_examples: Number of user examples to show
     """
     model.eval()
     
     with torch.no_grad():
-        # Возьмем один батч для примера
         for batch in val_loader:
             items_text_inputs, user_text_inputs, item_ids, user_ids, categories = [
-                x.to(device) for x in batch
+                to_device(x, device) for x in batch
             ]
 
             # Forward pass
@@ -39,7 +44,7 @@ def evaluate_predictions(model, val_loader, device, k=10, num_examples=5):
 
             # Вычисляем схожесть для каждого пользователя
             predictions = []
-            for user_emb in user_embeddings[:num_examples]:  # Берем только num_examples пользователей
+            for user_emb in user_embeddings[:num_examples]:
                 user_emb = user_emb.unsqueeze(0)
                 user_predictions = F.cosine_similarity(
                     user_emb.unsqueeze(0),
@@ -48,7 +53,7 @@ def evaluate_predictions(model, val_loader, device, k=10, num_examples=5):
                 )
                 predictions.append(user_predictions.squeeze(0))
             
-            predictions = torch.stack(predictions)  # [num_examples, n_items]
+            predictions = torch.stack(predictions)
             
             # Получаем топ-k предсказаний для каждого пользователя
             top_k_scores, top_k_indices = torch.topk(predictions, k=min(k, items_embeddings.size(0)))
@@ -58,15 +63,34 @@ def evaluate_predictions(model, val_loader, device, k=10, num_examples=5):
             for user_idx in range(min(num_examples, len(user_ids))):
                 print(f"\nUser {user_idx + 1}:")
                 print(f"User ID: {user_ids[user_idx].item()}")
-                print(f"User Text Input: {user_text_inputs['input_ids'][user_idx].tolist()}")  # Нужно декодировать через токенизатор
+                
+                # Декодируем текст пользователя
+                if tokenizer:
+                    user_text = tokenizer.decode(
+                        user_text_inputs['input_ids'][user_idx],
+                        skip_special_tokens=True
+                    )
+                    print(f"User Text Input: {user_text}")
+                
                 print("\nTop recommendations:")
-                
                 for rank, (score, idx) in enumerate(zip(top_k_scores[user_idx], top_k_indices[user_idx]), 1):
-                    print(f"{rank}. Item ID: {item_ids[idx].item()}")
-                    print(f"   Score: {score:.4f}")
-                    print(f"   Category: {categories[idx].item()}")
-                    print(f"   Text Input: {items_text_inputs['input_ids'][idx].tolist()}")  # Нужно декодировать через токенизатор
-                
+                    item_id = item_ids[idx.item()].item()  # Получаем скалярное значение
+                    
+                    # Декодируем текст товара
+                    if tokenizer:
+                        item_text = tokenizer.decode(
+                            items_text_inputs['input_ids'][idx],
+                            skip_special_tokens=True
+                        )
+                        print(f"{rank}. Item ID: {item_id}")
+                        print(f"   Score: {score:.4f}")
+                        print(f"   Category: {categories[idx].item()}")
+                        print(f"   Text: {item_text}\n")
+                    else:
+                        print(f"{rank}. Item ID: {item_id}")
+                        print(f"   Score: {score:.4f}")
+                        print(f"   Category: {categories[idx].item()}\n")
+            
             break  # Выходим после первого батча
 
 def load_model(model_path, device):
@@ -91,7 +115,7 @@ def load_model(model_path, device):
     
     return model, meta_data
 
-def load_config(config_path="config/config.yaml"):
+def load_config(config_path="configs/config.yaml"):
     """Load configuration from yaml file."""
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
@@ -102,9 +126,17 @@ if __name__ == "__main__":
     
     # Получение параметров из конфига
     model_path = config['inference']['model_path']
-    batch_size = config['inference']['batch_size']
+    batch_size = config['data']['batch_size']
     num_examples = config['inference']['num_examples']
     top_k = config['inference']['top_k']
+
+    # Prepare data
+    textual_history = pd.read_parquet('./data/textual_history.parquet')
+    id_history = pd.read_parquet('./data/id_history.parquet')
+    user_descriptions = pd.read_parquet('./data/user_descriptions.parquet')
+    
+    # Initialize tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(config['model']['text_model_name'])
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -118,7 +150,14 @@ if __name__ == "__main__":
     
     # Создание валидационного датасета и лоадера
     val_dataset = BuildTrainDataset(
-        split='val'
+        textual_history=textual_history,
+        user_descriptions=user_descriptions,
+        id_history=id_history,
+        tokenizer=tokenizer,
+        max_length=config['data']['max_length'],
+        split='val',
+        val_size=config['training'].get('validation_size', 0.1),
+        random_state=config['training'].get('random_seed', 42)
     )
     
     val_loader = DataLoader(
@@ -127,5 +166,12 @@ if __name__ == "__main__":
         shuffle=False
     )
     
-    # Оценка предсказаний
-    evaluate_predictions(model, val_loader, device, k=top_k, num_examples=num_examples) 
+    # Оценка предсказаний с передачей токенизатора
+    evaluate_predictions(
+        model, 
+        val_loader, 
+        device, 
+        k=top_k, 
+        num_examples=num_examples,
+        tokenizer=tokenizer  # Передаем токенизатор
+    ) 

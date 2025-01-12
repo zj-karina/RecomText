@@ -130,6 +130,37 @@ def create_user_description(targets_df: pd.DataFrame) -> pd.DataFrame:
     
     return user_descriptions
 
+def create_video_info_table(video_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Создает таблицу с информацией о видео для инференса
+    """
+    # Создаем уникальный маппинг категорий в числа
+    unique_categories = video_df['category'].dropna().unique()
+    category_to_id = {cat: idx for idx, cat in enumerate(unique_categories)}
+    
+    # Подготавливаем таблицу
+    video_info = video_df[['rutube_video_id', 'title', 'category']].copy()
+    
+    # Добавляем числовой ID категории
+    video_info['category_id'] = video_info['category'].map(category_to_id)
+    
+    # Заполняем пропуски
+    video_info['title'] = video_info['title'].fillna('')
+    video_info['category'] = video_info['category'].fillna('unknown')
+    video_info['category_id'] = video_info['category_id'].fillna(-1)
+    
+    # Убираем дубликаты
+    video_info = video_info.drop_duplicates(subset=['rutube_video_id'])
+    
+    # Сохраняем маппинг категорий отдельно
+    category_mapping = pd.DataFrame({
+        'category': list(category_to_id.keys()),
+        'category_id': list(category_to_id.values())
+    })
+    category_mapping.to_parquet('./data/category_mapping.parquet')
+    
+    return video_info
+
 def main():
     # Load data
     data, video, targets, all_events = load_data()
@@ -164,6 +195,10 @@ def main():
     detailed_history_df.to_parquet('./data/textual_history.parquet')
     user_history_df.to_parquet('./data/id_history.parquet')
     user_descriptions.to_parquet('./data/user_descriptions.parquet')
+
+    # Создаем таблицу для инференса
+    video_info = create_video_info_table(video)
+    video_info.to_parquet('./data/video_info.parquet')
 
 if __name__ == "__main__":
     main() 

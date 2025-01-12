@@ -4,6 +4,7 @@ from tqdm import tqdm
 from utils.losses import get_losses
 from utils.metrics import MetricsCalculator
 import os
+from transformers import AutoModel
 
 class Trainer:
     def __init__(self, model, train_loader, val_loader, optimizer, config):
@@ -160,7 +161,7 @@ class Trainer:
         os.makedirs(checkpoint_dir, exist_ok=True)
         
         # Сохраняем модель в формате HuggingFace
-        self.model.save_pretrained(os.path.join(checkpoint_dir, f'model_epoch_{epoch}'))
+        AutoModel.save_pretrained(os.path.join(checkpoint_dir, f'model_epoch_{epoch}'))
         
         # Сохраняем дополнительные данные
         checkpoint_meta = {
