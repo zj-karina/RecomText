@@ -41,19 +41,25 @@ class BuildTrainDataset(Dataset):
         return len(self.indices)
 
     def __getitem__(self, idx):
-        # Получаем ID видео
-        item_id = self.item_ids[idx]
+        idx = self.indices[idx]
+        # Get viewer_uid and related data
+        viewer_uid = self.id_history.iloc[idx]['viewer_uid']
+        item_text = self.textual_history.iloc[idx]['detailed_view']
+        item_ids = self.id_history.iloc[idx]['clean_video_id']
         
         # Получаем информацию о видео из таблицы video_info
-        video_info = self.video_info[self.video_info['rutube_video_id'] == item_id].iloc[0]
-        item_text = video_info['title']
-        category_idx = video_info['category_id']  # Берем готовый category_id из таблицы
+        # video_info = self.video_info[self.video_info['rutube_video_id'] == item_id].iloc[0]
+        # category_idx = video_info['category_id']  # Берем готовый category_id из таблицы
+
+        # Convert absolute indices to sequential
+        item_ids = [self.item_id_map[str(x)] for x in item_ids]
+        mapped_user_id = self.user_id_map[viewer_uid]
+        # Match viewer_uid with user_descriptions
+        user_row = self.user_descriptions[self.user_descriptions['viewer_uid'] == viewer_uid]
+        user_text = user_row.iloc[0]['user_description'] if not user_row.empty else ""
         
-        # Получаем текст пользователя
-        user_id = self.user_ids[idx]
-        user_text = self.user_descriptions[
-            self.user_descriptions['viewer_uid'] == user_id
-        ]['user_description'].iloc[0]
+        # Combine item texts
+        item_text = ' '.join(item_text)
         
         # Tokenize texts
         item_encoding = self.tokenizer(
@@ -67,8 +73,14 @@ class BuildTrainDataset(Dataset):
         
         item_text_inputs = {key: val.squeeze(0) for key, val in item_encoding.items()}
         user_text_inputs = {key: val.squeeze(0) for key, val in user_encoding.items()}
-        
-        return item_text_inputs, user_text_inputs, item_id, user_id, category_idx
+    
+        return (
+            item_text_inputs,
+            user_text_inputs,
+            torch.tensor(item_ids, dtype=torch.int64),
+            torch.tensor(mapped_user_id, dtype=torch.int64),
+            # torch.tensor(category_idx, dtype=torch.long)  # возвращаем числовой индекс категории
+        )
 
 def get_dataloader(dataset, batch_size, shuffle=True):
     return DataLoader(
