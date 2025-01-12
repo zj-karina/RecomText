@@ -1,177 +1,178 @@
+import os
+import faiss
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModel
-from tqdm import tqdm
-from data.dataset import BuildTrainDataset, get_dataloader
-from torch.utils.data import DataLoader
-import os
-import yaml
+import numpy as np
 import pandas as pd
+from tqdm import tqdm
+import yaml
+
+from transformers import AutoTokenizer
+from torch.utils.data import DataLoader
+
+from data.dataset import BuildTrainDataset  
+from models.multimodal_model import MultimodalRecommendationModel 
+
+def load_config(config_path="configs/config.yaml"):
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
 
 def to_device(data, device):
     """
-    Переносит данные на указанное устройство.
-    Поддерживает словари, списки, кортежи и тензоры.
+    Переносит данные на указанное устройство (ваша вспомогательная функция).
     """
     if isinstance(data, dict):
         return {key: to_device(value, device) for key, value in data.items()}
     elif isinstance(data, (list, tuple)):
         return [to_device(x, device) for x in data]
-    elif hasattr(data, 'to'):  # Проверяем наличие метода to
+    elif hasattr(data, 'to'):
         return data.to(device)
     return data
 
-def evaluate_predictions(model, val_loader, device, k=10, num_examples=5, tokenizer=None):
-    """
-    Evaluate model predictions on validation set and show examples.
-    """
-    model.eval()
-    
-    with torch.no_grad():
-        for batch in val_loader:
-            items_text_inputs, user_text_inputs, item_ids, user_ids, categories = [
-                to_device(x, device) for x in batch
-            ]
-
-            # Forward pass
-            items_embeddings, user_embeddings = model(
-                items_text_inputs, user_text_inputs, item_ids, user_ids
-            )
-
-            # Нормализация эмбеддингов
-            items_embeddings = F.normalize(items_embeddings, p=2, dim=1)
-            user_embeddings = F.normalize(user_embeddings, p=2, dim=1)
-
-            # Вычисляем схожесть для каждого пользователя
-            predictions = []
-            for user_emb in user_embeddings[:num_examples]:
-                user_emb = user_emb.unsqueeze(0)
-                user_predictions = F.cosine_similarity(
-                    user_emb.unsqueeze(0),
-                    items_embeddings.unsqueeze(0),
-                    dim=2
-                )
-                predictions.append(user_predictions.squeeze(0))
-            
-            predictions = torch.stack(predictions)
-            
-            # Получаем топ-k предсказаний для каждого пользователя
-            top_k_scores, top_k_indices = torch.topk(predictions, k=min(k, items_embeddings.size(0)))
-            
-            # Выводим результаты
-            print("\nPrediction Examples:")
-            for user_idx in range(min(num_examples, len(user_ids))):
-                print(f"\nUser {user_idx + 1}:")
-                print(f"User ID: {user_ids[user_idx].item()}")
-                
-                # Декодируем текст пользователя
-                if tokenizer:
-                    user_text = tokenizer.decode(
-                        user_text_inputs['input_ids'][user_idx],
-                        skip_special_tokens=True
-                    )
-                    print(f"User Text Input: {user_text}")
-                
-                print("\nTop recommendations:")
-                for rank, (score, idx) in enumerate(zip(top_k_scores[user_idx], top_k_indices[user_idx]), 1):
-                    item_id = item_ids[idx.item()].item()  # Получаем скалярное значение
-                    
-                    # Декодируем текст товара
-                    if tokenizer:
-                        item_text = tokenizer.decode(
-                            items_text_inputs['input_ids'][idx],
-                            skip_special_tokens=True
-                        )
-                        print(f"{rank}. Item ID: {item_id}")
-                        print(f"   Score: {score:.4f}")
-                        print(f"   Category: {categories[idx].item()}")
-                        print(f"   Text: {item_text}\n")
-                    else:
-                        print(f"{rank}. Item ID: {item_id}")
-                        print(f"   Score: {score:.4f}")
-                        print(f"   Category: {categories[idx].item()}\n")
-            
-            break  # Выходим после первого батча
-
-def load_model(model_path, device):
-    """
-    Load model from HuggingFace format checkpoint.
-    
-    Args:
-        model_path: Path to the saved model directory
-        device: Torch device
-    """
-    # Загружаем модель
-    model = AutoModel.from_pretrained(model_path)
-    model.to(device)
-    model.eval()
-    
-    # Загружаем метаданные если нужно
-    meta_path = os.path.join(os.path.dirname(model_path), 
-                            f'meta_{os.path.basename(model_path)}.pt')
-    meta_data = None
-    if os.path.exists(meta_path):
-        meta_data = torch.load(meta_path)
-    
-    return model, meta_data
-
-def load_config(config_path="configs/config.yaml"):
-    """Load configuration from yaml file."""
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
-
-if __name__ == "__main__":
-    # Загрузка конфигурации
+def main():
+    # 1) Загружаем конфиг
     config = load_config()
-    
-    # Получение параметров из конфига
     model_path = config['inference']['model_path']
     batch_size = config['data']['batch_size']
-    num_examples = config['inference']['num_examples']
+    max_length = config['data']['max_length']
+    
     top_k = config['inference']['top_k']
+    num_examples = config['inference']['num_examples']  # сколько пользователей показать
+    
+    index_path = config['inference'].get('index_path', 'video_index.faiss')
+    ids_path = config['inference'].get('ids_path', 'video_ids.npy')
+    
+    # 2) Загружаем модель (кастомный класс)
+    text_model_name = config['model']['text_model_name']
+    user_vocab_size = 10000
+    items_vocab_size = 50000
+    id_embed_dim = 32
+    text_embed_dim = 768
 
-    # Prepare data
+    model = MultimodalRecommendationModel(
+        text_model_name=text_model_name,
+        user_vocab_size=user_vocab_size,
+        items_vocab_size=items_vocab_size,
+        id_embed_dim=id_embed_dim,
+        text_embed_dim=text_embed_dim
+    )
+    
+    # Загрузка state_dict
+    if os.path.isdir(model_path):
+        print(f"Warning: {model_path} is directory, adapt as needed.")
+    else:
+        print(f"Loading state_dict from {model_path}")
+        state_dict = torch.load(model_path, map_location="cpu")
+        model.load_state_dict(state_dict)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.eval()
+
+    # 3) Загружаем FAISS-индекс
+    if not os.path.exists(index_path):
+        raise FileNotFoundError(f"Faiss index not found at {index_path}")
+    index = faiss.read_index(index_path)
+    
+    # Загружаем список товаров (video_ids)
+    video_ids = np.load(ids_path).tolist()
+    print(f"Loaded FAISS index with {index.ntotal} vectors. video_ids size={len(video_ids)}")
+    
+    # Если захотим быстро находить title/category, можно подгрузить df и словарь:
+    df_videos = pd.read_parquet("./data/all_videos.parquet")
+    df_videos_map = df_videos.set_index('rutube_video_id').to_dict(orient='index')
+    # Теперь df_videos_map[item_id] даст словарь с полями [title, category, category_id, ...]
+
+    # 4) Инициализируем токенизатор
+    tokenizer = AutoTokenizer.from_pretrained(text_model_name)
+
+    # 5) Готовим валидационный датасет (как в вашем коде)
     textual_history = pd.read_parquet('./data/textual_history.parquet')
     id_history = pd.read_parquet('./data/id_history.parquet')
     user_descriptions = pd.read_parquet('./data/user_descriptions.parquet')
-    
-    # Initialize tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(config['model']['text_model_name'])
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Загрузка модели
-    model, meta_data = load_model(model_path, device)
-    
-    # Если нужно, можно использовать метаданные
-    if meta_data:
-        print(f"Model was trained for {meta_data['epoch']} epochs")
-        print(f"Best metric: {meta_data['best_metric']}")
-    
-    # Создание валидационного датасета и лоадера
+
     val_dataset = BuildTrainDataset(
         textual_history=textual_history,
         user_descriptions=user_descriptions,
         id_history=id_history,
         tokenizer=tokenizer,
-        max_length=config['data']['max_length'],
+        max_length=max_length,
         split='val',
         val_size=config['training'].get('validation_size', 0.1),
         random_state=config['training'].get('random_seed', 42)
     )
-    
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False
     )
-    
-    # Оценка предсказаний с передачей токенизатора
-    evaluate_predictions(
-        model, 
-        val_loader, 
-        device, 
-        k=top_k, 
-        num_examples=num_examples,
-        tokenizer=tokenizer  # Передаем токенизатор
-    ) 
+
+    # 6) Пробегаемся по val_loader, но рекомендации достаём из FAISS
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(val_loader):
+            items_text_inputs, user_text_inputs, item_ids, user_ids, categories = [
+                to_device(x, device) for x in batch
+            ]
+            
+            # Считаем user_embeddings
+            # (item_embeddings нам НЕ нужны, они уже в FAISS)
+            # Заглушка для items_text_inputs
+            dummy_items_inputs = {
+                "input_ids": torch.zeros_like(items_text_inputs["input_ids"]),
+                "attention_mask": torch.zeros_like(items_text_inputs["attention_mask"])
+            }
+            dummy_item_ids = torch.zeros_like(item_ids)
+            
+            # Прогоняем модель
+            _, user_embeddings = model(
+                items_text_inputs=dummy_items_inputs,
+                user_text_inputs=user_text_inputs,
+                item_ids=dummy_item_ids,
+                user_id=user_ids
+            )
+            
+            # Нормируем
+            user_embeddings = F.normalize(user_embeddings, p=2, dim=1)
+
+            # Вычисляем рекомендации для первых num_examples пользователей в батче
+            for u in range(min(num_examples, user_embeddings.size(0))):
+                user_emb = user_embeddings[u].unsqueeze(0)  # shape [1, emb_dim]
+                user_emb_np = user_emb.cpu().numpy().astype('float32')
+                
+                # Поиск в FAISS
+                distances, faiss_indices = index.search(user_emb_np, top_k)
+                # distances, faiss_indices -> shape [1, top_k]
+                
+                retrieved_ids = [video_ids[idx] for idx in faiss_indices[0]]
+                retrieved_scores = distances[0]
+                
+                # Выводим
+                print(f"\nUser {u+1} (batch {batch_idx}):")
+                print(f" User ID: {user_ids[u].item()}")
+                
+                # Декодируем текст пользователя, если нужно
+                user_text_decoded = tokenizer.decode(
+                    user_text_inputs["input_ids"][u],
+                    skip_special_tokens=True
+                )
+                print(f" User text: {user_text_decoded}")
+
+                # Покажем top-K
+                print(f" Top-{top_k} recommendations from FAISS:")
+                for rank, (vid, score) in enumerate(zip(retrieved_ids, retrieved_scores), start=1):
+                    # Можно достать title/category из df_videos_map
+                    video_data = df_videos_map.get(vid, {})
+                    title = video_data.get('title', 'Unknown title')
+                    cat = video_data.get('category', 'Unknown category')
+                    
+                    print(f"  {rank}. Video ID={vid}, Score={score:.4f}, Category={cat}")
+                    print(f"     Title: {title}")
+
+            # Для демонстрации прерываемся после первого батча
+            break
+
+    print("Inference done.")
+
+
+if __name__ == "__main__":
+    main()
