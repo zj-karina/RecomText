@@ -6,11 +6,10 @@ import pandas as pd
 from tqdm import tqdm
 import yaml
 
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModel
 from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 
-# Импортируем вашу модель
 from models.multimodal_model import MultimodalRecommendationModel
 
 class VideoInfoDataset(Dataset):
@@ -70,10 +69,10 @@ def load_config(config_path="configs/config.yaml"):
 def main():
     # 1) Загружаем конфиг
     config = load_config()
-    model_path = config['inference']['model_path']           # где лежит обученная модель (HF формат)
-    text_model_name = config['model']['text_model_name']   
-    batch_size = config['data']['batch_size']                # размер батча
-    max_length = config['data']['max_length']                # макс. длина токенов
+    model_path = config['inference']['model_path']
+    text_model_name = config['model']['text_model_name']
+    batch_size = config['data']['batch_size']
+    max_length = config['data']['max_length']
     index_path = config['inference'].get('index_path', 'video_index.faiss')
     ids_path = config['inference'].get('ids_path', 'video_ids.npy')
     
@@ -85,48 +84,46 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(text_model_name)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Инициализируем вашу кастомную модель
-    # (Обратите внимание: вы, возможно, сохраняли её не стандартным AutoModel,
-    #  а через torch.save(state_dict). Тогда смотрите, как правильно загрузить веса.)
-    user_vocab_size = 10000
-    items_vocab_size = 50000
-    id_embed_dim = 32
-    text_embed_dim = 768
+    # 4) Создаем датасет для индексации
+    dataset = VideoInfoDataset(df_videos, tokenizer, max_length=max_length)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
+    # 5) Инициализируем модель с размерами из датасета
     model = MultimodalRecommendationModel(
         text_model_name=text_model_name,
-        user_vocab_size=user_vocab_size,
-        items_vocab_size=items_vocab_size,
-        id_embed_dim=id_embed_dim,
-        text_embed_dim=text_embed_dim
+        user_vocab_size=len(dataset.user_id_map),
+        items_vocab_size=len(dataset.item_id_map),
+        id_embed_dim=config['model']['id_embed_dim'],
+        text_embed_dim=config['model']['text_embed_dim']
     )
 
-    # Загрузка обученных весов (пример):
-    if os.path.isdir(model_path):
-        # Если вы сохраняли через AutoModel.save_pretrained(...) — это один вариант
-        print(f"Warning: {model_path} seems to be a HF directory; adapt load accordingly.")
+    # Загрузка обученных весов
+    if os.path.exists(model_path):
+        print(f"Loading model from {model_path}")
+        # Загружаем модель в формате HuggingFace
+        model.text_model = AutoModel.from_pretrained(model_path)
+        
+        # Загружаем метаданные
+        meta_path = os.path.join(os.path.dirname(model_path), 
+                                f'meta_{os.path.basename(model_path)}.pt')
+        if os.path.exists(meta_path):
+            checkpoint_meta = torch.load(meta_path, map_location="cpu")
+            print(f"Loaded metadata from epoch {checkpoint_meta['epoch']}")
+            print(f"Best metric: {checkpoint_meta['best_metric']}")
     else:
-        # Если вы сохраняли через torch.save(state_dict, ...)
-        print(f"Loading state_dict from {model_path} ...")
-        state_dict = torch.load(model_path, map_location="cpu")
-        model.load_state_dict(state_dict)
+        raise FileNotFoundError(f"Model not found at {model_path}")
 
     model.to(device)
     model.eval()
 
-    # 4) Делаем DataLoader по всем товарам
-    dataset = VideoInfoDataset(df_videos, tokenizer, max_length=max_length)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
-
-    # 5) Создаём FAISS index
-    # Возьмём размерность text_model.config.hidden_size или у вас может быть text_embed_dim
-    embed_dim = model.text_model.config.hidden_size  
-    index = faiss.IndexFlatIP(embed_dim)  # dot product (Inner Product)
+    # 6) Создаём FAISS index
+    embed_dim = model.text_model.config.hidden_size
+    index = faiss.IndexFlatIP(embed_dim)
     
     all_embeddings = []
     all_ids = []
 
-    # 6) Прогоняем товары через модель, получаем item_embeddings
+    # 7) Прогоняем товары через модель
     with torch.no_grad():
         for tokens_batch, item_ids_batch in tqdm(loader, desc="Indexing items"):
             tokens_batch = {k: v.to(device) for k, v in tokens_batch.items()}
@@ -144,7 +141,7 @@ def main():
                 items_text_inputs=tokens_batch,
                 user_text_inputs=dummy_user_inputs,
                 item_ids=item_ids_batch,
-                user_id=dummy_user_ids
+                user_ids=dummy_user_ids
             )
 
             # Нормируем для косинус-похожести
@@ -162,7 +159,7 @@ def main():
     print("Adding to Faiss index...", all_embeddings.shape)
     index.add(all_embeddings)
 
-    # 7) Сохраняем индекс + IDs
+    # 8) Сохраняем индекс + IDs
     faiss.write_index(index, index_path)
     np.save(ids_path, np.array(all_ids, dtype=np.int64))
     print(f"Saved FAISS index to {index_path}, IDs to {ids_path}")
