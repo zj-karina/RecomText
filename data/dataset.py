@@ -6,7 +6,7 @@ import numpy as np
 
 class BuildTrainDataset(Dataset):
     """Dataset for training with unpackable outputs and user-description fallback."""
-    def __init__(self, textual_history, user_descriptions, id_history, tokenizer, max_length=128, split='train', val_size=0.1, random_state=42):
+    def __init__(self, textual_history, user_descriptions, id_history, tokenizer, max_length=128, split='train', val_size=0.1, random_state=42, item_id_map=None):
         self.textual_history = textual_history
         self.user_descriptions = user_descriptions
         self.id_history = id_history
@@ -29,7 +29,10 @@ class BuildTrainDataset(Dataset):
 
         # Create mappings
         self.user_id_map = {uid: idx for idx, uid in enumerate(id_history['viewer_uid'].unique())}
-        self.item_id_map = {iid: idx for idx, iid in enumerate(id_history['clean_video_id'].explode().unique())}
+        if item_id_map is not None:
+            self.item_id_map = item_id_map
+        else:
+            self.item_id_map = {iid: idx for idx, iid in enumerate(id_history['clean_video_id'].explode().unique())}
         
         # Create reverse mappings
         self.reverse_user_id_map = {idx: uid for uid, idx in self.user_id_map.items()}

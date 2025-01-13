@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, List
+import os
+import json
 
 def load_data() -> tuple:
     """
@@ -132,7 +134,7 @@ def create_user_description(targets_df: pd.DataFrame) -> pd.DataFrame:
 
 def create_video_info_table(video_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Создает таблицу с информацией о видео для инференса
+    Создает таблицу с информацией о видео для инференса и маппинг ID
     """
     # Создаем уникальный маппинг категорий в числа
     unique_categories = video_df['category'].dropna().unique()
@@ -142,7 +144,11 @@ def create_video_info_table(video_df: pd.DataFrame) -> pd.DataFrame:
     video_info = video_df[['rutube_video_id', 'title', 'category']].copy()
     
     # Убираем префикс 'video_' из rutube_video_id
-    video_info['rutube_video_id'] = video_info['rutube_video_id'].str.replace('video_', '')
+    video_info['clean_video_id'] = video_info['rutube_video_id'].str.replace('video_', '')
+    
+    # Создаем маппинг ID видео в числовые индексы
+    unique_video_ids = video_info['clean_video_id'].unique()
+    item_id_map = {str(vid): idx for idx, vid in enumerate(unique_video_ids)}
     
     # Добавляем числовой ID категории
     video_info['category_id'] = video_info['category'].map(category_to_id)
@@ -153,14 +159,23 @@ def create_video_info_table(video_df: pd.DataFrame) -> pd.DataFrame:
     video_info['category_id'] = video_info['category_id'].fillna(-1)
     
     # Убираем дубликаты
-    video_info = video_info.drop_duplicates(subset=['rutube_video_id'])
+    video_info = video_info.drop_duplicates(subset=['clean_video_id'])
     
-    # Сохраняем маппинг категорий отдельно
+    # Сохраняем маппинги
+    mappings_dir = './data/mappings'
+    os.makedirs(mappings_dir, exist_ok=True)
+    
+    # Сохраняем маппинг видео
+    with open(os.path.join(mappings_dir, 'item_id_map.json'), 'w', encoding='utf-8') as f:
+        json.dump(item_id_map, f, ensure_ascii=False, indent=2)
+    print(f"Saved item_id_map with {len(item_id_map)} items")
+    
+    # Сохраняем маппинг категорий
     category_mapping = pd.DataFrame({
         'category': list(category_to_id.keys()),
         'category_id': list(category_to_id.values())
     })
-    category_mapping.to_parquet('./data/category_mapping.parquet')
+    category_mapping.to_parquet(os.path.join(mappings_dir, 'category_mapping.parquet'))
     
     return video_info
 
@@ -198,7 +213,7 @@ def main():
     user_descriptions.to_parquet('./data/user_descriptions.parquet')
 
     # Создаем таблицу для инференса
-    video_info = create_video_info_table(result_with_video_info)
+    video_info = create_video_info_table(video)
     video_info.to_parquet('./data/video_info.parquet')
 
 if __name__ == "__main__":

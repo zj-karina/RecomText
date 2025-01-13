@@ -21,7 +21,12 @@ def train_model(config_path='configs/config.yaml'):
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config['model']['text_model_name'])
     
-    # Create training dataset
+    # Загружаем маппинг
+    with open('./data/mappings/item_id_map.json', 'r', encoding='utf-8') as f:
+        item_id_map = json.load(f)
+    print(f"Loaded item_id_map with {len(item_id_map)} items")
+    
+    # Create training dataset with existing mapping
     train_dataset = BuildTrainDataset(
         textual_history=textual_history,
         user_descriptions=user_descriptions,
@@ -30,18 +35,11 @@ def train_model(config_path='configs/config.yaml'):
         max_length=config['data']['max_length'],
         split='train',
         val_size=config['training'].get('validation_size', 0.1),
-        random_state=config['training'].get('random_seed', 42)
+        random_state=config['training'].get('random_seed', 42),
+        item_id_map=item_id_map  # Передаем существующий маппинг
     )
     
-    # Сохраняем маппинги
-    mappings_dir = os.path.join(config['training']['checkpoint_dir'], 'mappings')
-    os.makedirs(mappings_dir, exist_ok=True)
-    
-    with open(os.path.join(mappings_dir, 'item_id_map.json'), 'w', encoding='utf-8') as f:
-        json.dump(train_dataset.item_id_map, f, ensure_ascii=False, indent=2)
-    
-    print(f"Saved item_id_map with {len(train_dataset.item_id_map)} items")
-    
+    # Create validation dataset with same mapping
     val_dataset = BuildTrainDataset(
         textual_history=textual_history,
         user_descriptions=user_descriptions,
@@ -50,7 +48,8 @@ def train_model(config_path='configs/config.yaml'):
         max_length=config['data']['max_length'],
         split='val',
         val_size=config['training'].get('validation_size', 0.1),
-        random_state=config['training'].get('random_seed', 42)
+        random_state=config['training'].get('random_seed', 42),
+        item_id_map=item_id_map  # Передаем тот же маппинг
     )
     
     # Create dataloaders

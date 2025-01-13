@@ -56,8 +56,7 @@ def collate_fn(batch):
     input_ids = torch.stack([x['input_ids'] for x in tokens_list], dim=0)
     attention_mask = torch.stack([x['attention_mask'] for x in tokens_list], dim=0)
 
-    # Преобразуем item_ids в двумерный тензор
-    item_ids_tensor = torch.stack([x.unsqueeze(0) for x in item_ids_list], dim=0)
+    item_ids_tensor = torch.stack(item_ids_list, dim=0)
 
     tokens_batch = {
         'input_ids': input_ids,
@@ -88,13 +87,8 @@ def main():
     # 3) Загружаем модель и tokenizer
     tokenizer = AutoTokenizer.from_pretrained(text_model_name)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Загружаем маппинги
-    mappings_path = os.path.join(config['training']['checkpoint_dir'], 'mappings', 'item_id_map.json')
-    if not os.path.exists(mappings_path):
-        raise FileNotFoundError(f"item_id_map not found at {mappings_path}")
         
-    with open(mappings_path, 'r', encoding='utf-8') as f:
+    with open('./data/mappings/item_id_map.json', 'r', encoding='utf-8') as f:
         item_id_map = json.load(f)
     print(f"Loaded item_id_map with {len(item_id_map)} items")
 
@@ -131,14 +125,14 @@ def main():
                 "input_ids": torch.zeros_like(tokens_batch["input_ids"]),
                 "attention_mask": torch.zeros_like(tokens_batch["attention_mask"])
             }
-            dummy_user_ids = torch.zeros_like(item_ids_batch)
+            dummy_user_ids = torch.zeros_like(item_ids_batch.squeeze(1))
 
             # Прямой проход (только item_embeddings нам нужен)
             items_embeddings, _ = model(
                 tokens_batch,
-+               dummy_user_inputs,
-+               item_ids_batch,
-+               dummy_user_ids
+                dummy_user_inputs,
+                item_ids_batch,
+                dummy_user_ids
             )
 
             # Нормируем для косинус-похожести
