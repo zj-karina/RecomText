@@ -8,7 +8,10 @@ import os
 import yaml
 import pandas as pd
 import faiss
+import json
 import numpy as np
+
+from models.multimodal_model import MultimodalRecommendationModel
 
 def to_device(data, device):
     """
@@ -23,7 +26,7 @@ def to_device(data, device):
         return data.to(device)
     return data
 
-def evaluate_predictions(model, val_loader, device, k=10, num_examples=5, tokenizer=None):
+def evaluate_predictions(model, val_loader, textual_history, device, k=10, num_examples=5, tokenizer=None):
     """
     Evaluate model predictions on validation set and show examples.
     """
@@ -56,21 +59,21 @@ def evaluate_predictions(model, val_loader, device, k=10, num_examples=5, tokeni
     model.eval()
     with torch.no_grad():
         for batch_idx, batch in enumerate(val_loader):
-            items_text_inputs, user_text_inputs, item_ids, user_ids, categories = [
+            items_text_inputs, user_text_inputs, item_ids, user_ids = [
                 to_device(x, device) for x in batch
             ]
-            
+
             # Считаем user_embeddings
             _, user_embeddings = model(
-                items_text_inputs=items_text_inputs,
-                user_text_inputs=user_text_inputs,
-                item_ids=item_ids,
-                user_ids=user_ids
+                items_text_inputs,
+                user_text_inputs,
+                item_ids,
+                user_ids
             )
             
             # Нормируем
             user_embeddings = F.normalize(user_embeddings, p=2, dim=1)
-
+    
             # Вычисляем рекомендации для первых num_examples пользователей в батче
             for u in range(min(num_examples, user_embeddings.size(0))):
                 user_emb = user_embeddings[u].unsqueeze(0)
@@ -82,22 +85,27 @@ def evaluate_predictions(model, val_loader, device, k=10, num_examples=5, tokeni
                 # Получаем ID видео и скоры
                 retrieved_ids = [video_ids[idx] for idx in faiss_indices[0]]
                 retrieved_scores = distances[0]
-
+    
                 # Декодируем текст пользователя
                 user_text_decoded = tokenizer.decode(
                     user_text_inputs["input_ids"][u],
                     skip_special_tokens=True
                 )
-                print(f"\nUser text: {user_text_decoded}")
-
+                print(f"\nUser text: {user_text_decoded.replace("passage: ", "")}")
+    
+                # Получаем детальную историю просмотров
+                print("\nUser viewing history:")
+                print(textual_history.iloc[u]['detailed_view'].replace("query: ", ""))
+    
                 # Показываем top-K
                 print(f"Top-{k} recommendations from FAISS:")
                 for rank, (vid, score) in enumerate(zip(retrieved_ids, retrieved_scores), start=1):
-                    video_data = df_videos_map.get(str(vid), {})  # Преобразуем в строку для соответствия
+                    vid_value = vid[0]
+                    video_data = df_videos_map.get(str(vid_value), {})  # Преобразуем в строку для соответствия
                     title = video_data.get('title', 'Unknown title')
                     cat = video_data.get('category', 'Unknown category')
                     
-                    print(f"  {rank}. Video ID={vid}, Score={score:.4f}, Category={cat}")
+                    print(f"  {rank}. Video ID={vid_value}, Score={score:.4f}, Category={cat}")
                     print(f"     Title: {title}")
 
             # Для демонстрации прерываемся после первого батча
@@ -129,6 +137,11 @@ if __name__ == "__main__":
     textual_history = pd.read_parquet('./data/textual_history.parquet')
     id_history = pd.read_parquet('./data/id_history.parquet')
     user_descriptions = pd.read_parquet('./data/user_descriptions.parquet')
+
+    # Загружаем маппинг
+    with open('./data/mappings/item_id_map.json', 'r', encoding='utf-8') as f:
+        item_id_map = json.load(f)
+    print(f"Loaded item_id_map with {len(item_id_map)} items")
     
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained(config['model']['text_model_name'])
@@ -148,10 +161,11 @@ if __name__ == "__main__":
         max_length=config['data']['max_length'],
         split='val',
         val_size=config['training'].get('validation_size', 0.1),
-        random_state=config['training'].get('random_seed', 42)
+        random_state=config['training'].get('random_seed', 42),
+        item_id_map=item_id_map  # Передаем тот же маппинг
     )
     
-    val_loader = DataLoader(
+    val_loader = get_dataloader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False
@@ -161,6 +175,7 @@ if __name__ == "__main__":
     evaluate_predictions(
         model, 
         val_loader, 
+        textual_history,
         device, 
         k=top_k, 
         num_examples=num_examples,
