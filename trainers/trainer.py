@@ -30,6 +30,56 @@ class Trainer:
         self.patience = config.get('training', {}).get('patience', 5)
         self.no_improvement = 0
 
+    def train(self, epochs):
+        """Полный цикл обучения с валидацией."""
+        for epoch in range(epochs):
+            print(f"\nEpoch {epoch + 1}/{epochs}")
+            
+            # Обучение
+            train_metrics = self.train_epoch()
+            if epoch == 0:
+                self._save_checkpoint(epoch)
+            print("\nTraining metrics:")
+            self._print_metrics(train_metrics)
+            
+            # Валидация
+            val_metrics = self.validate()
+            if val_metrics:  # Проверяем, что метрики не None
+                # Проверка на улучшение
+                current_metric = val_metrics.get('contextual_ndcg', 0)  # Используем contextual_ndcg вместо ndcg@10
+                if current_metric > self.best_metric:
+                    self.best_metric = current_metric
+                    self.best_epoch = epoch
+                    self.no_improvement = 0
+                    self._save_checkpoint(epoch, val_metrics)
+                else:
+                    self.no_improvement += 1
+                
+                # Early stopping
+                if self.no_improvement >= self.patience:
+                    print(f"\nEarly stopping triggered. No improvement for {self.patience} epochs.")
+                    break
+
+    def train_epoch(self):
+        """Один эпох обучения."""
+        self.model.train()
+        total_loss = 0
+        total_contrastive_loss = 0
+        total_recommendation_loss = 0
+
+        for batch in tqdm(self.train_loader, desc="Training"):
+            loss, c_loss, r_loss = self.training_step(batch)
+            
+            total_loss += loss
+            total_contrastive_loss += c_loss
+            total_recommendation_loss += r_loss
+
+        return {
+            'loss': total_loss / len(self.train_loader),
+            'contrastive_loss': total_contrastive_loss / len(self.train_loader),
+            'recommendation_loss': total_recommendation_loss / len(self.train_loader)
+        }
+
     def validate(self):
         """Валидация модели с использованием актуального FAISS индекса"""
         self.model.eval()
@@ -176,7 +226,7 @@ class Trainer:
             metrics_accum[metric] += user_metrics.get(metric, 0)
 
     def _compile_metrics(self, total_loss, contrastive_loss, recommendation_loss, metrics_accum, num_users):
-        """Компиляция финальных метрик"""
+        """Компиляция финальных метрик."""
         metrics_dict = {
             'val_loss': total_loss / len(self.val_loader),
             'val_contrastive_loss': contrastive_loss / len(self.val_loader),
@@ -184,12 +234,13 @@ class Trainer:
         }
         
         if num_users > 0:
-            for metric in metrics_accum:
-                metrics_dict[metric] = metrics_accum[metric] / num_users
+            # Добавляем все накопленные метрики
+            for metric, total_value in metrics_accum.items():
+                metrics_dict[metric] = total_value / num_users
                 
+        # Используем новую функцию для вывода метрик
         print("\nValidation Metrics:")
-        for name, value in metrics_dict.items():
-            print(f"{name}: {value:.4f}")
+        self._print_metrics(metrics_dict)
             
         return metrics_dict
 
@@ -214,45 +265,26 @@ class Trainer:
             print(f"Error updating index: {str(e)}")
 
     def _print_metrics(self, metrics):
-        """Вывод метрик в консоль."""
-        # Группируем метрики по типу
-        losses = {k: v for k, v in metrics.items() if 'loss' in k}
-        # precision = {k: v for k, v in metrics.items() if 'precision' in k}
-        # recall = {k: v in metrics.items() if 'recall' in k}
-        # ndcg = {k: v for k, v in metrics.items() if 'ndcg' in k}
-        # coverage = {k: v for k, v in metrics.items() if 'coverage' in k}
-        # diversity = {k: v for k, v in metrics.items() if 'diversity' in k}
-        # other = {k: v for k, v in metrics.items() if not any(x in k for x in ['loss', 'precision', 'recall', 'ndcg', 'coverage', 'diversity'])}
-
+        """Форматированный вывод метрик по группам."""
+        
+        # Группируем метрики по типам
+        groups = {
+            'Losses': {k: v for k, v in metrics.items() if 'loss' in k.lower()},
+            'Semantic Metrics': {k: v for k, v in metrics.items() if 'semantic' in k.lower()},
+            'Category Metrics': {k: v for k, v in metrics.items() if 'category' in k.lower() or 'cross' in k.lower()},
+            'NDCG': {k: v for k, v in metrics.items() if 'ndcg' in k.lower()},
+            'Demographic Alignment': {k: v for k, v in metrics.items() if 'das_' in k.lower()}
+        }
+        
         # Выводим метрики по группам
-        print("\nLosses:")
-        for name, value in losses.items():
-            print(f"  {name}: {value:.4f}")
-        
-        # print("\nPrecision metrics:")
-        # for name, value in precision.items():
-        #     print(f"  {name}: {value:.4f}")
-        
-        # print("\nRecall metrics:")
-        # for name, value in recall.items():
-        #     print(f"  {name}: {value:.4f}")
-        
-        # print("\nNDCG metrics:")
-        # for name, value in ndcg.items():
-        #     print(f"  {name}: {value:.4f}")
-        
-        # print("\nCoverage metrics:")
-        # for name, value in coverage.items():
-        #     print(f"  {name}: {value:.4f}")
-        
-        # print("\nDiversity metrics:")
-        # for name, value in diversity.items():
-        #     print(f"  {name}: {value:.4f}")
-        
-        # if other:
-        #     print("\nOther metrics:")
-        #     for name, value in other.items():
-        #         print(f"  {name}: {value:.4f}")
+        for group_name, group_metrics in groups.items():
+            if group_metrics:  # Выводим группу только если есть метрики
+                print(f"\n{group_name}:")
+                for name, value in group_metrics.items():
+                    if isinstance(value, (int, float)):
+                        print(f"  {name}: {value:.4f}")
+                    else:
+                        print(f"  {name}: {value}")
 
     def training_step(self, batch):
         """Один шаг обучения."""
