@@ -1,140 +1,146 @@
+import math
 import torch
+import torch.nn.functional as F
 import numpy as np
 from typing import Dict, List, Union, Tuple
 
 class MetricsCalculator:
-    """Калькулятор метрик для рекомендательной системы с учетом категорий."""
+    """Калькулятор специализированных метрик для рекомендательной системы."""
     
-    @staticmethod
-    def precision_at_k(predictions: torch.Tensor, 
-                      ground_truth: torch.Tensor, 
-                      categories: torch.Tensor,
-                      k: int) -> float:
+    def __init__(self, sim_threshold: float = 0.7):
         """
-        Вычисляет Precision@K с учетом категорий.
+        Args:
+            sim_threshold: порог для "успешной" семантической близости
         """
-        batch_size = predictions.size(0)
-        _, top_k_indices = torch.topk(predictions, k, dim=1)
-        
-        pred_categories = categories[top_k_indices]
-        true_indices = torch.arange(batch_size, device=predictions.device)
-        true_categories = categories[true_indices].unsqueeze(1)
-        
-        matches = (pred_categories == true_categories)
-        precision = matches.float().mean(dim=1)
-        
-        return precision.mean().item()
+        self.sim_threshold = sim_threshold
 
-    @staticmethod
-    def recall_at_k(predictions: torch.Tensor, 
-                    ground_truth: torch.Tensor, 
-                    categories: torch.Tensor,
-                    k: int) -> float:
+    def semantic_precision_at_k(self, 
+                              target_embedding: torch.Tensor,
+                              recommended_embeddings: torch.Tensor,
+                              k: int) -> float:
         """
-        Вычисляет Recall@K с учетом категорий.
+        Вычисляет Semantic Precision@K.
         """
-        batch_size = predictions.size(0)
-        _, top_k_indices = torch.topk(predictions, k, dim=1)
-        
-        pred_categories = categories[top_k_indices]
-        true_indices = torch.arange(batch_size, device=predictions.device)
-        true_categories = categories[true_indices].unsqueeze(1)
-        
-        matches = (pred_categories == true_categories)
-        recall = (matches.sum(dim=1) > 0).float()
-        
-        return recall.mean().item()
+        similarities = F.cosine_similarity(
+            target_embedding.unsqueeze(0),
+            recommended_embeddings,
+            dim=1
+        )
+        successes = (similarities >= self.sim_threshold).sum().item()
+        return successes / k
 
-    @staticmethod
-    def ndcg_at_k(predictions: torch.Tensor, 
-                  ground_truth: torch.Tensor, 
-                  categories: torch.Tensor,
-                  k: int) -> float:
+    def cross_category_relevance(self,
+                               sp_at_k: float,
+                               target_category: str,
+                               recommended_categories: List[str]) -> float:
         """
-        Вычисляет NDCG@K с учетом категорий.
+        Вычисляет Cross-Category Relevance на основе SP@K и категориальной избыточности.
         """
-        batch_size = predictions.size(0)
-        _, top_k_indices = torch.topk(predictions, k, dim=1)
-        
-        pred_categories = categories[top_k_indices]
-        true_indices = torch.arange(batch_size, device=predictions.device)
-        true_categories = categories[true_indices].unsqueeze(1)
-        
-        matches = (pred_categories == true_categories).float()
-        
-        # Вычисляем DCG
-        discounts = torch.log2(torch.arange(k, device=predictions.device) + 2.0)
-        dcg = (matches / discounts.unsqueeze(0)).sum(dim=1)
-        
-        # Вычисляем IDCG (идеальный DCG)
-        idcg = (1 / discounts[0]).unsqueeze(0).expand(batch_size)
-        
-        ndcg = dcg / idcg
-        
-        return ndcg.mean().item()
+        same_category_count = sum(1 for cat in recommended_categories if cat == target_category)
+        redundancy = same_category_count / len(recommended_categories)
+        return 0.7 * sp_at_k + 0.3 * (1 - redundancy)
 
-    @staticmethod
-    def coverage(predictions: torch.Tensor, 
-                categories: torch.Tensor,
-                k: int) -> float:
+    def contextual_ndcg(self,
+                       target_embedding: torch.Tensor,
+                       recommended_embeddings: torch.Tensor,
+                       target_category: str,
+                       recommended_categories: List[str]) -> float:
         """
-        Вычисляет покрытие категорий в топ-k рекомендациях.
+        Вычисляет Contextual NDCG с учетом семантической близости и категорий.
         """
-        _, top_k_indices = torch.topk(predictions, k, dim=1)
-        recommended_categories = categories[top_k_indices]
-        unique_recommended = torch.unique(recommended_categories)
-        unique_total = torch.unique(categories)
+        similarities = F.cosine_similarity(
+            target_embedding.unsqueeze(0),
+            recommended_embeddings,
+            dim=1
+        )
         
-        return len(unique_recommended) / len(unique_total)
+        relevances = []
+        for sim, rec_category in zip(similarities, recommended_categories):
+            sim_val = sim.item()
+            if rec_category == target_category and sim_val >= 0.8:
+                rel = 3
+            elif rec_category != target_category and sim_val >= 0.8:
+                rel = 2
+            elif rec_category == target_category and sim_val < 0.8:
+                rel = 1
+            else:
+                rel = 0
+            relevances.append(rel)
 
-    @staticmethod
-    def diversity(predictions: torch.Tensor,
-                 item_embeddings: torch.Tensor,
-                 k: int) -> float:
-        """
-        Вычисляет разнообразие рекомендаций на основе эмбеддингов.
-        """
-        batch_size = predictions.size(0)
-        _, top_k_indices = torch.topk(predictions, k, dim=1)
+        dcg = sum(rel / math.log2(rank + 2) for rank, rel in enumerate(relevances, 1))
+        ideal_relevances = sorted(relevances, reverse=True)
+        idcg = sum(rel / math.log2(rank + 2) for rank, rel in enumerate(ideal_relevances, 1))
         
-        diversities = []
-        for indices in top_k_indices:
-            embeddings = item_embeddings[indices]
-            similarities = torch.matmul(embeddings, embeddings.T)
-            mask = torch.ones_like(similarities) - torch.eye(k, device=similarities.device)
-            diversity = 1 - (similarities * mask).sum() / (k * (k - 1))
-            diversities.append(diversity.item())
+        return dcg / idcg if idcg > 0 else 0
+
+    def demographic_alignment_score(self,
+                                  user_demographics: Dict[str, str],
+                                  recommended_embeddings: torch.Tensor,
+                                  demographic_centroids: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, float]:
+        """
+        Вычисляет Demographic Alignment Score для рекомендаций.
+        
+        Args:
+            user_demographics: словарь с демографическими характеристиками пользователя
+            recommended_embeddings: эмбеддинги рекомендованных товаров
+            demographic_centroids: словарь центроидов для каждой демографической группы
+        
+        Returns:
+            Dict с DAS scores для каждой демографической характеристики
+        """
+        das_scores = {}
+        
+        for demo_feature, user_group in user_demographics.items():
+            if demo_feature in demographic_centroids and user_group in demographic_centroids[demo_feature]:
+                group_centroid = demographic_centroids[demo_feature][user_group]
+                
+                # Вычисляем среднее косинусное сходство между рекомендациями и центроидом группы
+                similarities = F.cosine_similarity(
+                    recommended_embeddings,
+                    group_centroid.unsqueeze(0),
+                    dim=1
+                )
+                das_scores[f"das_{demo_feature}"] = similarities.mean().item()
+        
+        return das_scores
+
+    def compute_metrics(self,
+                       target_embedding: torch.Tensor,
+                       recommended_embeddings: torch.Tensor,
+                       target_category: str,
+                       recommended_categories: List[str],
+                       k: int,
+                       user_demographics: Dict[str, str] = None,
+                       demographic_centroids: Dict[str, Dict[str, torch.Tensor]] = None) -> Dict[str, float]:
+        """
+        Вычисляет все метрики для одного пользователя.
+        """
+        metrics = {
+            "semantic_precision@k": self.semantic_precision_at_k(
+                target_embedding,
+                recommended_embeddings,
+                k
+            ),
+            "cross_category_relevance": self.cross_category_relevance(
+                self.semantic_precision_at_k(target_embedding, recommended_embeddings, k),
+                target_category,
+                recommended_categories
+            ),
+            "contextual_ndcg": self.contextual_ndcg(
+                target_embedding,
+                recommended_embeddings,
+                target_category,
+                recommended_categories
+            )
+        }
+        
+        # Добавляем DAS если доступны демографические данные
+        if user_demographics and demographic_centroids:
+            das_scores = self.demographic_alignment_score(
+                user_demographics,
+                recommended_embeddings,
+                demographic_centroids
+            )
+            metrics.update(das_scores)
             
-        return np.mean(diversities)
-
-    def compute_metrics(
-        self, 
-        predictions: torch.Tensor,
-        ground_truth: torch.Tensor,
-        categories: torch.Tensor,
-        item_embeddings: torch.Tensor,
-        ks: List[int] = [1, 5, 10]
-    ) -> Dict[str, float]:
-        """
-        Вычисляет все метрики для заданных k.
-        """
-        metrics = {}
-        
-        for k in ks:
-            metrics[f'precision@{k}'] = self.precision_at_k(
-                predictions, ground_truth, categories, k
-            )
-            metrics[f'recall@{k}'] = self.recall_at_k(
-                predictions, ground_truth, categories, k
-            )
-            metrics[f'ndcg@{k}'] = self.ndcg_at_k(
-                predictions, ground_truth, categories, k
-            )
-            metrics[f'coverage@{k}'] = self.coverage(
-                predictions, categories, k
-            )
-            metrics[f'diversity@{k}'] = self.diversity(
-                predictions, item_embeddings, k
-            )
-        
         return metrics 
