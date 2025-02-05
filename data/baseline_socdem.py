@@ -193,6 +193,9 @@ def create_demographic_data(targets_df: pd.DataFrame) -> pd.DataFrame:
         labels=['<18', '18-25', '26-35', '36-45', '46-55', '55+']
     )
     
+    # Добавляем категорию 'unknown' для age_group
+    demographic_data['age_group'] = demographic_data['age_group'].cat.add_categories('unknown')
+    
     # Заполняем пропуски
     demographic_data['sex'] = demographic_data['sex'].fillna('unknown')
     demographic_data['region'] = demographic_data['region'].fillna('unknown')

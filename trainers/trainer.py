@@ -46,7 +46,7 @@ class Trainer:
             val_metrics = self.validate()
             if val_metrics:  # Проверяем, что метрики не None
                 # Проверка на улучшение
-                current_metric = val_metrics.get('contextual_ndcg', 0)  # Используем contextual_ndcg вместо ndcg@10
+                current_metric = val_metrics.get('contextual_ndcg', 0)  # Используем contextual_ndcg
                 if current_metric > self.best_metric:
                     self.best_metric = current_metric
                     self.best_epoch = epoch
@@ -154,23 +154,29 @@ class Trainer:
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(self.val_loader, desc="Validation")):
                 # Обработка батча
-                items_text, user_text, item_ids, user_ids = self.to_device(batch)
+                items_text_inputs, user_text_inputs, item_ids, user_ids = [
+                    self.to_device(x) for x in batch
+                ]
                 
                 # Forward pass
-                items_emb, user_emb = self.model(items_text, user_text, item_ids, user_ids)
-                items_emb = F.normalize(items_emb, p=2, dim=1)
-                user_emb = F.normalize(user_emb, p=2, dim=1)
+                items_embeddings, user_embeddings = self.model(
+                    items_text_inputs, user_text_inputs, item_ids, user_ids
+                )
+
+                # Нормализация эмбеддингов
+                items_embeddings = F.normalize(items_embeddings, p=2, dim=1)
+                user_embeddings = F.normalize(user_embeddings, p=2, dim=1)
 
                 # Расчет потерь
-                rec_loss = self.compute_recommendation_loss(user_emb, items_emb)
-                con_loss = self.compute_contrastive_loss(items_emb, user_emb)
+                rec_loss = self.compute_recommendation_loss(user_embeddings, items_embeddings)
+                con_loss = self.compute_contrastive_loss(items_embeddings, user_embeddings)
                 total_loss += (con_loss + self.config['training']['lambda_rec'] * rec_loss).item()
                 
                 # Поиск рекомендаций и расчет метрик
-                for i in range(user_emb.size(0)):
+                for i in range(user_embeddings.size(0)):
                     user_metrics = self._process_user(
-                        user_emb[i], 
-                        items_emb[i], 
+                        user_embeddings[i], 
+                        items_embeddings[i], 
                         item_ids[i], 
                         user_ids[i], 
                         index, 
