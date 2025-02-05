@@ -40,6 +40,8 @@ class Trainer:
             
             # Обучение
             train_metrics = self.train_epoch()
+            if epoch == 0:
+                self._save_checkpoint(epoch)
             print("\nTraining metrics:")
             self._print_metrics(train_metrics)
             
@@ -76,6 +78,7 @@ class Trainer:
             total_loss += loss
             total_contrastive_loss += c_loss
             total_recommendation_loss += r_loss
+            break
 
         return {
             'loss': total_loss / len(self.train_loader),
@@ -130,8 +133,7 @@ class Trainer:
                 if batch_idx == 0 and detailed_output:
                     print("\nValidation Example:")
                     print("\nUser viewing history:")
-                    for item_text in textual_history.iloc[batch_idx]['detailed_view']:
-                        print(f"- {item_text}")
+                    print(textual_history.iloc[batch_idx]['detailed_view'].replace("query: ", ""))
 
                 # Forward pass
                 items_embeddings, user_embeddings = self.model(
@@ -191,27 +193,26 @@ class Trainer:
 
         return metrics_dict
 
-    def _save_checkpoint(self, epoch, metrics):
+    def _save_checkpoint(self, epoch, metrics=None):
         """Сохраняет чекпоинт и обновляет индекс."""
         checkpoint_dir = self.config['training']['checkpoint_dir']
         os.makedirs(checkpoint_dir, exist_ok=True)
-
-        # Сохраняем дополнительные данные
-        checkpoint_meta = {
-            'epoch': epoch,
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'metrics': metrics,
-            'best_metric': self.best_metric,
-            'config': self.config  # Сохраняем конфиг для воспроизводимости
-        }
-        
-        meta_path = os.path.join(checkpoint_dir, f'meta_epoch_{epoch}.pt')
-        torch.save(checkpoint_meta, meta_path)
+        if metrics:
+            # Сохраняем дополнительные данные
+            checkpoint_meta = {
+                'epoch': epoch,
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'metrics': metrics,
+                'best_metric': self.best_metric,
+                'config': self.config  # Сохраняем конфиг для воспроизводимости
+            }
+            
+            meta_path = os.path.join(checkpoint_dir, f'meta_epoch_{epoch}.pt')
+            torch.save(checkpoint_meta, meta_path)
         
         # Сохраняем модель
         self.model.save_pretrained(os.path.join(checkpoint_dir, f'model_epoch_{epoch}'))
-        print(f"\nSaved checkpoint for epoch {epoch} with validation metrics:")
-        self._print_metrics(metrics)
+        print(f"\nSaved checkpoint for epoch {epoch}")
         
         # Обновляем FAISS индекс с путем к текущему чекпоинту
         try:
@@ -229,42 +230,42 @@ class Trainer:
         """Вывод метрик в консоль."""
         # Группируем метрики по типу
         losses = {k: v for k, v in metrics.items() if 'loss' in k}
-        precision = {k: v for k, v in metrics.items() if 'precision' in k}
-        recall = {k: v in metrics.items() if 'recall' in k}
-        ndcg = {k: v for k, v in metrics.items() if 'ndcg' in k}
-        coverage = {k: v for k, v in metrics.items() if 'coverage' in k}
-        diversity = {k: v for k, v in metrics.items() if 'diversity' in k}
-        other = {k: v for k, v in metrics.items() if not any(x in k for x in ['loss', 'precision', 'recall', 'ndcg', 'coverage', 'diversity'])}
+        # precision = {k: v for k, v in metrics.items() if 'precision' in k}
+        # recall = {k: v in metrics.items() if 'recall' in k}
+        # ndcg = {k: v for k, v in metrics.items() if 'ndcg' in k}
+        # coverage = {k: v for k, v in metrics.items() if 'coverage' in k}
+        # diversity = {k: v for k, v in metrics.items() if 'diversity' in k}
+        # other = {k: v for k, v in metrics.items() if not any(x in k for x in ['loss', 'precision', 'recall', 'ndcg', 'coverage', 'diversity'])}
 
         # Выводим метрики по группам
         print("\nLosses:")
         for name, value in losses.items():
             print(f"  {name}: {value:.4f}")
         
-        print("\nPrecision metrics:")
-        for name, value in precision.items():
-            print(f"  {name}: {value:.4f}")
+        # print("\nPrecision metrics:")
+        # for name, value in precision.items():
+        #     print(f"  {name}: {value:.4f}")
         
-        print("\nRecall metrics:")
-        for name, value in recall.items():
-            print(f"  {name}: {value:.4f}")
+        # print("\nRecall metrics:")
+        # for name, value in recall.items():
+        #     print(f"  {name}: {value:.4f}")
         
-        print("\nNDCG metrics:")
-        for name, value in ndcg.items():
-            print(f"  {name}: {value:.4f}")
+        # print("\nNDCG metrics:")
+        # for name, value in ndcg.items():
+        #     print(f"  {name}: {value:.4f}")
         
-        print("\nCoverage metrics:")
-        for name, value in coverage.items():
-            print(f"  {name}: {value:.4f}")
+        # print("\nCoverage metrics:")
+        # for name, value in coverage.items():
+        #     print(f"  {name}: {value:.4f}")
         
-        print("\nDiversity metrics:")
-        for name, value in diversity.items():
-            print(f"  {name}: {value:.4f}")
+        # print("\nDiversity metrics:")
+        # for name, value in diversity.items():
+        #     print(f"  {name}: {value:.4f}")
         
-        if other:
-            print("\nOther metrics:")
-            for name, value in other.items():
-                print(f"  {name}: {value:.4f}")
+        # if other:
+        #     print("\nOther metrics:")
+        #     for name, value in other.items():
+        #         print(f"  {name}: {value:.4f}")
 
     def training_step(self, batch):
         """Один шаг обучения."""
