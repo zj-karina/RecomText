@@ -28,7 +28,7 @@ class VideoInfoDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        original_id = str(row['rutube_video_id'])
+        original_id = str(row['clean_video_id'])
         
         if original_id not in self.item_id_map:
             raise ValueError(f"Unknown item_id: {original_id}")
@@ -155,6 +155,7 @@ def main(config=None):
     # 8) Сохраняем индекс + IDs
     faiss.write_index(index, index_path)
     np.save(ids_path, np.array(all_ids, dtype=np.int64))
+    np.save(config['inference']['embeddings_path'], all_embeddings)
     print(f"Saved FAISS index to {index_path}, IDs to {ids_path}")
     print("Done.")
 

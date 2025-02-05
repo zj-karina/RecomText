@@ -6,8 +6,6 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from utils.losses import get_losses
 from utils.metrics import MetricsCalculator
-import os
-from transformers import AutoModel
 import pandas as pd
 import numpy as np
 import faiss
@@ -27,301 +25,193 @@ class Trainer:
         self.metrics_calculator = MetricsCalculator()
         self.ks = config.get('evaluation', {}).get('ks', [1, 5, 10])
         
-        # Для отслеживания лучшей модели
         self.best_metric = float('-inf')
         self.best_epoch = 0
         self.patience = config.get('training', {}).get('patience', 5)
         self.no_improvement = 0
 
-    def train(self, epochs):
-        """Полный цикл обучения с валидацией."""
-        for epoch in range(epochs):
-            print(f"\nEpoch {epoch + 1}/{epochs}")
-            
-            # Обучение
-            train_metrics = self.train_epoch()
-            if epoch == 0:
-                self._save_checkpoint(epoch)
-            print("\nTraining metrics:")
-            self._print_metrics(train_metrics)
-            
-            # Валидация
-            val_metrics = self.validate()
-            print("\nValidation metrics:")
-            self._print_metrics(val_metrics)
-            
-            # Проверка на улучшение
-            current_metric = val_metrics.get('ndcg@10', 0)  # Можно настроить метрику для отслеживания
-            if current_metric > self.best_metric:
-                self.best_metric = current_metric
-                self.best_epoch = epoch
-                self.no_improvement = 0
-                self._save_checkpoint(epoch, val_metrics)
-            else:
-                self.no_improvement += 1
-            
-            # Early stopping
-            if self.no_improvement >= self.patience:
-                print(f"\nEarly stopping triggered. No improvement for {self.patience} epochs.")
-                break
-
-    def train_epoch(self):
-        """Один эпох обучения."""
-        self.model.train()
-        total_loss = 0
-        total_contrastive_loss = 0
-        total_recommendation_loss = 0
-
-        for batch in tqdm(self.train_loader, desc="Training"):
-            loss, c_loss, r_loss = self.training_step(batch)
-            
-            total_loss += loss
-            total_contrastive_loss += c_loss
-            total_recommendation_loss += r_loss
-            break
-
-        return {
-            'loss': total_loss / len(self.train_loader),
-            'contrastive_loss': total_contrastive_loss / len(self.train_loader),
-            'recommendation_loss': total_recommendation_loss / len(self.train_loader)
-        }
-
     def validate(self):
-        """Валидация модели с использованием актуального FAISS индекса и кастомных метрик."""
+        """Валидация модели с использованием актуального FAISS индекса"""
         self.model.eval()
         total_loss = 0
         total_contrastive_loss = 0
         total_recommendation_loss = 0
         
-        # Загружаем необходимые данные
+        # Загрузка необходимых данных
         textual_history = pd.read_parquet('./data/textual_history.parquet')
+        df_videos = pd.read_parquet("./data/video_info.parquet")
+        df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
+
+        # Проверка и обновление индекса
+        index_path = self.config['inference']['index_path']
+        ids_path = self.config['inference']['ids_path']
+        embeddings_path = self.config['inference']['embeddings_path']
         
-        # Проверяем наличие FAISS индекса и эмбеддингов
-        index_path = self.config['inference'].get('index_path', 'video_index.faiss')
-        ids_path = self.config['inference'].get('ids_path', 'video_ids.npy')
-        embeddings_path = './data/item_embeddings.npy'
-        
-        if not os.path.exists(index_path) or not os.path.exists(ids_path):
-            print("\nFAISS index not found, creating new index...")
+        if not all(os.path.exists(p) for p in [index_path, ids_path, embeddings_path]):
+            print("\nIndex files not found, creating new index...")
             try:
                 from indexer import main as create_index
                 create_index(config=self.config)
-                print("FAISS index created successfully")
             except Exception as e:
-                print(f"Warning: Failed to create FAISS index: {str(e)}")
+                print(f"Error creating index: {str(e)}")
                 return None
 
-        # Загружаем необходимые данные
+        # Загрузка индекса и данных
         index = faiss.read_index(index_path)
-        video_ids = np.load(ids_path).tolist()
-        df_videos = pd.read_parquet("./data/video_info.parquet")
-        df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
+        video_ids = np.load(ids_path)
+        item_embeddings_array = np.load(embeddings_path)
         
-        # Загружаем или создаем эмбеддинги товаров
-        if os.path.exists(embeddings_path):
-            item_embeddings_array = np.load(embeddings_path)
-        else:
-            print("Warning: item_embeddings.npy not found. Computing embeddings...")
-            # TODO: Добавить логику создания эмбеддингов, если необходимо
-            return None
-
-        # Загружаем демографические данные
+        # Демографические данные
         try:
             user_demographics_df = pd.read_parquet('./data/user_demographics.parquet')
-            demographic_features = ['age_group', 'gender', 'location']  # пример характеристик
-            has_demographics = True
+            demographic_features = ['age_group', 'gender', 'location']
+            demographic_centroids = self._compute_demographic_centroids(
+                user_demographics_df, textual_history, item_embeddings_array
+            )
         except FileNotFoundError:
-            print("Warning: Demographics data not found, DAS will not be calculated")
-            has_demographics = False
+            print("Demographics data not found")
+            demographic_centroids = None
 
-        # Вычисляем центроиды для демографических групп, если данные доступны
-        demographic_centroids = {}
-        if has_demographics:
-            print("Computing demographic centroids...")
-            for feature in demographic_features:
-                demographic_centroids[feature] = {}
-                for group in user_demographics_df[feature].unique():
-                    group_users = user_demographics_df[user_demographics_df[feature] == group].index
-                    if len(group_users) > 0:
-                        # Получаем эмбеддинги для пользователей группы
-                        group_embeddings = []
-                        for user_id in group_users:
-                            # Здесь нужно получить эмбеддинги товаров, которые смотрел пользователь
-                            # Это зависит от вашей структуры данных
-                            user_items = textual_history[textual_history['user_id'] == user_id]
-                            if len(user_items) > 0:
-                                item_embs = torch.tensor(
-                                    [item_embeddings_array[idx] for idx in user_items['item_id']],
-                                    device=self.device
-                                )
-                                group_embeddings.append(item_embs.mean(dim=0))
-                        
-                        if group_embeddings:
-                            group_centroid = torch.stack(group_embeddings).mean(dim=0)
-                            demographic_centroids[feature][group] = F.normalize(group_centroid, p=2, dim=0)
-
-        # Инициализируем калькулятор метрик
+        # Инициализация метрик
         metrics_calculator = MetricsCalculator(sim_threshold=0.7)
-        
-        # Инициализируем аккумуляторы для метрик
-        metrics_accum = {
-            "semantic_precision@k": 0.0,
-            "cross_category_relevance": 0.0,
-            "contextual_ndcg": 0.0
-        }
+        metrics_accum = {metric: 0.0 for metric in ["semantic_precision@k", "cross_category_relevance", "contextual_ndcg"]}
         num_users = 0
-        
-        # Получаем параметры для метрик
         top_k = self.config['inference'].get('top_k', 10)
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(self.val_loader, desc="Validation")):
-                items_text_inputs, user_text_inputs, item_ids, user_ids = [
-                    self.to_device(x) for x in batch
-                ]
+                # Обработка батча
+                items_text, user_text, item_ids, user_ids = self.to_device(batch)
                 
-                # Выводим историю просмотров для первого батча
-                if batch_idx == 0:
-                    print("\nValidation Example:")
-                    print("\nUser viewing history:")
-                    print(textual_history.iloc[batch_idx]['detailed_view'].replace("query: ", ""))
-
                 # Forward pass
-                items_embeddings, user_embeddings = self.model(
-                    items_text_inputs,
-                    user_text_inputs,
-                    item_ids,
-                    user_ids
-                )
+                items_emb, user_emb = self.model(items_text, user_text, item_ids, user_ids)
+                items_emb = F.normalize(items_emb, p=2, dim=1)
+                user_emb = F.normalize(user_emb, p=2, dim=1)
 
-                # Нормализация эмбеддингов
-                items_embeddings = F.normalize(items_embeddings, p=2, dim=1)
-                user_embeddings = F.normalize(user_embeddings, p=2, dim=1)
-
-                # Вычисляем потери
-                recommendation_loss = self.compute_recommendation_loss(user_embeddings, items_embeddings)
-                contrastive_loss = self.compute_contrastive_loss(items_embeddings, user_embeddings)
-                loss = contrastive_loss + self.config['training']['lambda_rec'] * recommendation_loss
-
-                total_loss += loss.item()
-                total_contrastive_loss += contrastive_loss.item()
-                total_recommendation_loss += recommendation_loss.item()
-
-                # Вычисляем метрики для каждого пользователя в батче
-                batch_size = user_embeddings.size(0)
-                for i in range(batch_size):
-                    user_emb = user_embeddings[i].unsqueeze(0)
-                    target_item_emb = items_embeddings[i]
-                    
-                    # Получаем ID и категорию целевого товара
-                    target_item_id = str(item_ids[i].item() if item_ids[i].dim() == 0 else item_ids[i][0].item())
-                    target_category = df_videos_map.get(target_item_id, {}).get('category', 'Unknown')
-
-                    # Поиск топ-K рекомендаций
-                    user_emb_np = user_emb.cpu().numpy().astype('float32')
-                    distances, faiss_indices = index.search(user_emb_np, top_k)
-                    
-                    # Получаем эмбеддинги и категории рекомендованных товаров
-                    recommended_embeddings = torch.tensor(
-                        [item_embeddings_array[idx] for idx in faiss_indices[0]],
-                        device=target_item_emb.device
-                    )
-                    recommended_embeddings = F.normalize(recommended_embeddings, p=2, dim=1)
-                    
-                    recommended_categories = []
-                    for idx in faiss_indices[0]:
-                        vid = video_ids[idx]
-                        vid_value = vid[0] if isinstance(vid, (list, tuple, np.ndarray)) else vid
-                        video_data = df_videos_map.get(str(vid_value), {})
-                        recommended_categories.append(video_data.get('category', 'Unknown'))
-
-                    # Получаем демографические данные пользователя, если доступны
-                    user_demo = {}
-                    if has_demographics:
-                        user_id = user_ids[i].item()
-                        if user_id in user_demographics_df.index:
-                            for feature in demographic_features:
-                                user_demo[feature] = user_demographics_df.loc[user_id, feature]
-
-                    # Вычисляем метрики для текущего пользователя
-                    user_metrics = metrics_calculator.compute_metrics(
-                        target_item_emb,
-                        recommended_embeddings,
-                        target_category,
-                        recommended_categories,
+                # Расчет потерь
+                rec_loss = self.compute_recommendation_loss(user_emb, items_emb)
+                con_loss = self.compute_contrastive_loss(items_emb, user_emb)
+                total_loss += (con_loss + self.config['training']['lambda_rec'] * rec_loss).item()
+                
+                # Поиск рекомендаций и расчет метрик
+                for i in range(user_emb.size(0)):
+                    user_metrics = self._process_user(
+                        user_emb[i], 
+                        items_emb[i], 
+                        item_ids[i], 
+                        user_ids[i], 
+                        index, 
+                        video_ids, 
+                        df_videos_map,
+                        item_embeddings_array,
+                        metrics_calculator,
                         top_k,
-                        user_demographics=user_demo if has_demographics else None,
-                        demographic_centroids=demographic_centroids if has_demographics else None
+                        user_demographics_df,
+                        demographic_centroids
                     )
-
-                    # Аккумулируем метрики
-                    for metric_name, metric_value in user_metrics.items():
-                        metrics_accum[metric_name] += metric_value
+                    self._update_metrics(metrics_accum, user_metrics)
                     num_users += 1
 
-                    # Выводим примеры рекомендаций для первого пользователя первого батча
-                    if batch_idx == 0 and i == 0:
-                        print(f"\nTop-{top_k} recommendations:")
-                        for rank, (idx, score) in enumerate(zip(faiss_indices[0], distances[0]), 1):
-                            vid = video_ids[idx]
-                            vid_value = vid[0] if isinstance(vid, (list, tuple, np.ndarray)) else vid
-                            video_data = df_videos_map.get(str(vid_value), {})
-                            title = video_data.get('title', 'Unknown title')
-                            cat = video_data.get('category', 'Unknown category')
-                            print(f"  {rank}. Video ID={vid_value}, Score={score:.4f}, Category={cat}")
-                            print(f"     Title: {title}")
+        return self._compile_metrics(total_loss, total_contrastive_loss, total_recommendation_loss, metrics_accum, num_users)
 
-        # Вычисляем средние значения метрик
+    def _compute_demographic_centroids(self, user_demographics_df, textual_history, item_embeddings):
+        """Вычисление центроидов демографических групп"""
+        centroids = {}
+        for feature in ['age_group', 'gender', 'location']:
+            centroids[feature] = {}
+            for group in user_demographics_df[feature].unique():
+                group_users = user_demographics_df[user_demographics_df[feature] == group].index
+                embeddings = []
+                for user_id in group_users:
+                    user_items = textual_history[textual_history['user_id'] == user_id]
+                    if not user_items.empty:
+                        item_indices = user_items['item_id'].values
+                        embeddings.append(torch.mean(torch.tensor(
+                            item_embeddings[item_indices], 
+                            device=self.device
+                        ), dim=0))
+                if embeddings:
+                    centroids[feature][group] = F.normalize(torch.mean(torch.stack(embeddings), dim=0), p=2, dim=0)
+        return centroids
+
+    def _process_user(self, user_emb, target_emb, item_id, user_id, index, video_ids, df_videos_map, item_embeddings, metrics_calculator, top_k, user_demographics, centroids):
+        """Обработка одного пользователя для расчета метрик"""
+        # Поиск рекомендаций
+        user_emb_np = user_emb.cpu().numpy().astype('float32')
+        distances, indices = index.search(user_emb_np.reshape(1, -1), top_k)
+        
+        # Получение рекомендаций
+        rec_embeddings = torch.tensor(item_embeddings[indices[0]], device=self.device)
+        rec_embeddings = F.normalize(rec_embeddings, p=2, dim=1)
+        
+        # Метаданные рекомендаций
+        rec_categories = []
+        for idx in indices[0]:
+            video_id = str(video_ids[idx])
+            rec_categories.append(df_videos_map.get(video_id, {}).get('category', 'Unknown'))
+
+        # Демографические данные
+        user_demo = {}
+        if user_demographics is not None and user_id.item() in user_demographics.index:
+            for feature in ['age_group', 'gender', 'location']:
+                user_demo[feature] = user_demographics.loc[user_id.item(), feature]
+
+        # Целевой товар
+        target_id = str(item_id.item())
+        target_category = df_videos_map.get(target_id, {}).get('category', 'Unknown')
+
+        return metrics_calculator.compute_metrics(
+            target_emb,
+            rec_embeddings,
+            target_category,
+            rec_categories,
+            top_k,
+            user_demographics=user_demo,
+            demographic_centroids=centroids
+        )
+
+    def _update_metrics(self, metrics_accum, user_metrics):
+        """Обновление аккумуляторов метрик"""
+        for metric in metrics_accum:
+            metrics_accum[metric] += user_metrics.get(metric, 0)
+
+    def _compile_metrics(self, total_loss, contrastive_loss, recommendation_loss, metrics_accum, num_users):
+        """Компиляция финальных метрик"""
         metrics_dict = {
             'val_loss': total_loss / len(self.val_loader),
-            'val_contrastive_loss': total_contrastive_loss / len(self.val_loader),
-            'val_recommendation_loss': total_recommendation_loss / len(self.val_loader)
+            'val_contrastive_loss': contrastive_loss / len(self.val_loader),
+            'val_recommendation_loss': recommendation_loss / len(self.val_loader)
         }
         
-        # Добавляем средние значения кастомных метрик
         if num_users > 0:
-            for metric_name, metric_sum in metrics_accum.items():
-                metrics_dict[metric_name] = metric_sum / num_users
-
-        # Выводим все метрики
+            for metric in metrics_accum:
+                metrics_dict[metric] = metrics_accum[metric] / num_users
+                
         print("\nValidation Metrics:")
-        for metric_name, metric_value in metrics_dict.items():
-            print(f"{metric_name}: {metric_value:.4f}")
-
+        for name, value in metrics_dict.items():
+            print(f"{name}: {value:.4f}")
+            
         return metrics_dict
 
     def _save_checkpoint(self, epoch, metrics=None):
-        """Сохраняет чекпоинт и обновляет индекс."""
+        """Улучшенное сохранение чекпоинта"""
         checkpoint_dir = self.config['training']['checkpoint_dir']
         os.makedirs(checkpoint_dir, exist_ok=True)
-        if metrics:
-            # Сохраняем дополнительные данные
-            checkpoint_meta = {
-                'epoch': epoch,
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'metrics': metrics,
-                'best_metric': self.best_metric,
-                'config': self.config  # Сохраняем конфиг для воспроизводимости
-            }
-            
-            meta_path = os.path.join(checkpoint_dir, f'meta_epoch_{epoch}.pt')
-            torch.save(checkpoint_meta, meta_path)
         
-        # Сохраняем модель
-        self.model.save_pretrained(os.path.join(checkpoint_dir, f'model_epoch_{epoch}'))
-        print(f"\nSaved checkpoint for epoch {epoch}")
+        # Сохранение модели
+        model_path = os.path.join(checkpoint_dir, f'model_epoch_{epoch}')
+        self.model.save_pretrained(model_path)
         
-        # Обновляем FAISS индекс с путем к текущему чекпоинту
+        # Обновление конфига для индексатора
+        index_config = self.config.copy()
+        index_config['inference']['model_path'] = model_path
+        
         try:
-            print("\nUpdating FAISS index...")
             from indexer import main as update_index
-            # Создаем временный конфиг с обновленным путем к модели
-            temp_config = self.config.copy()
-            temp_config['training']['checkpoint_dir'] = os.path.join(checkpoint_dir, f'model_epoch_{epoch}')
-            update_index(config=temp_config)
+            update_index(config=index_config)
             print("FAISS index updated successfully")
         except Exception as e:
-            print(f"Warning: Failed to update FAISS index: {str(e)}")
+            print(f"Error updating index: {str(e)}")
 
     def _print_metrics(self, metrics):
         """Вывод метрик в консоль."""

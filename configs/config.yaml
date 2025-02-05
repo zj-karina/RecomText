@@ -19,6 +19,7 @@ training:
   save_total_limit: 3           # Максимальное количество сохраняемых чекпоинтов 
 
 inference:
+  embeddings_path: "./data/item_embeddings.npy"
   model_path: "intfloat/multilingual-e5-large"  # Путь к директории с моделью
   num_examples: 5  # Количество примеров для показа
   top_k: 10       # Количество рекомендаций для каждого пользователя 
