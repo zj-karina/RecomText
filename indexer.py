@@ -69,9 +69,11 @@ def load_config(config_path="configs/config.yaml"):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-def main():
-    # 1) Загружаем конфиг
-    config = load_config()
+def main(config=None):
+    # Загружаем конфиг
+    if config is None:
+        config = load_config()
+    
     model_path = config['inference']['model_path']
     text_model_name = config['model']['text_model_name']
     batch_size = config['data']['batch_size']

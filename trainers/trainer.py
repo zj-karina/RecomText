@@ -1,3 +1,6 @@
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -5,6 +8,9 @@ from utils.losses import get_losses
 from utils.metrics import MetricsCalculator
 import os
 from transformers import AutoModel
+import pandas as pd
+import numpy as np
+import faiss
 
 class Trainer:
     def __init__(self, model, train_loader, val_loader, optimizer, config):
@@ -78,86 +84,118 @@ class Trainer:
         }
 
     def validate(self):
-        """Валидация модели."""
+        """Валидация модели с использованием актуального FAISS индекса."""
         self.model.eval()
-        val_loss = 0
-        val_contrastive_loss = 0
-        val_recommendation_loss = 0
+        total_loss = 0
+        total_contrastive_loss = 0
+        total_recommendation_loss = 0
         
+        # Загружаем необходимые данные
+        textual_history = pd.read_parquet('./data/textual_history.parquet')
+        
+        # Проверяем наличие FAISS индекса
+        index_path = self.config['inference'].get('index_path', 'video_index.faiss')
+        ids_path = self.config['inference'].get('ids_path', 'video_ids.npy')
+        
+        if not os.path.exists(index_path) or not os.path.exists(ids_path):
+            print("\nFAISS index not found, creating new index...")
+            try:
+                from indexer import main as create_index
+                create_index()
+                print("FAISS index created successfully")
+            except Exception as e:
+                print(f"Warning: Failed to create FAISS index: {str(e)}")
+                detailed_output = False
+            
+        # Загружаем индекс и видео информацию
+        if os.path.exists(index_path) and os.path.exists(ids_path):
+            index = faiss.read_index(index_path)
+            video_ids = np.load(ids_path).tolist()
+            df_videos = pd.read_parquet("./data/video_info.parquet")
+            df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
+            detailed_output = True
+        else:
+            detailed_output = False
+
+        metrics_dict = {}
+        num_batches = 0
+
         with torch.no_grad():
-            for batch in tqdm(self.val_loader, desc="Validating"):
-                items_text_inputs, user_text_inputs, item_ids, user_ids, categories = [
+            for batch_idx, batch in enumerate(tqdm(self.val_loader, desc="Validation")):
+                items_text_inputs, user_text_inputs, item_ids, user_ids = [
                     self.to_device(x) for x in batch
                 ]
+                
+                # Выводим историю просмотров для первого батча
+                if batch_idx == 0 and detailed_output:
+                    print("\nValidation Example:")
+                    print("\nUser viewing history:")
+                    for item_text in textual_history.iloc[batch_idx]['detailed_view']:
+                        print(f"- {item_text}")
 
                 # Forward pass
                 items_embeddings, user_embeddings = self.model(
-                    items_text_inputs, user_text_inputs, item_ids, user_ids
+                    items_text_inputs,
+                    user_text_inputs,
+                    item_ids,
+                    user_ids
                 )
 
                 # Нормализация эмбеддингов
                 items_embeddings = F.normalize(items_embeddings, p=2, dim=1)
                 user_embeddings = F.normalize(user_embeddings, p=2, dim=1)
 
-                batch_size = user_embeddings.size(0)
-                
-                # Вычисляем схожесть каждого пользователя со всеми items
-                predictions = []
-                for user_emb in user_embeddings:
-                    # Расширяем размерность для пользователя
-                    user_emb = user_emb.unsqueeze(0)  # [1, embed_dim]
-                    
-                    # Вычисляем схожесть с каждым item
-                    user_predictions = F.cosine_similarity(
-                        user_emb.unsqueeze(0),  # [1, 1, embed_dim]
-                        items_embeddings.unsqueeze(0),  # [1, n_items, embed_dim]
-                        dim=2
-                    )  # [1, n_items]
-                    predictions.append(user_predictions.squeeze(0))
-                
-                # Объединяем предсказания для всех пользователей
-                predictions = torch.stack(predictions)  # [batch_size, n_items]
-                
-                # Создаем ground truth
-                ground_truth = torch.zeros(batch_size, items_embeddings.size(0), device=self.device)
-                ground_truth[torch.arange(batch_size), torch.arange(batch_size)] = 1
-
-                # Вычисляем потери
+                # Потери
                 recommendation_loss = self.compute_recommendation_loss(
                     user_embeddings, items_embeddings
                 )
                 contrastive_loss = self.compute_contrastive_loss(
                     items_embeddings, user_embeddings
                 )
+                loss = contrastive_loss + self.config['training']['lambda_rec'] * recommendation_loss
 
-                val_contrastive_loss += contrastive_loss.item()
-                val_recommendation_loss += recommendation_loss.item()
-                val_loss += (contrastive_loss + self.config['training']['lambda_rec'] * recommendation_loss).item()
+                # Аккумулируем потери
+                total_loss += loss.item()
+                total_contrastive_loss += contrastive_loss.item()
+                total_recommendation_loss += recommendation_loss.item()
+                
+                # Для первого батча показываем рекомендации
+                if batch_idx == 0 and detailed_output:
+                    k = self.config['inference'].get('top_k', 10)
+                    user_emb = user_embeddings[0].unsqueeze(0)
+                    user_emb_np = user_emb.cpu().numpy().astype('float32')
+                    
+                    # Поиск в FAISS
+                    distances, faiss_indices = index.search(user_emb_np, k)
+                    
+                    # Получаем ID видео и скоры
+                    retrieved_ids = [video_ids[idx] for idx in faiss_indices[0]]
+                    retrieved_scores = distances[0]
 
-                # Вычисляем метрики
-                metrics = self.metrics_calculator.compute_metrics(
-                    predictions=predictions,
-                    ground_truth=ground_truth,
-                    categories=categories,
-                    item_embeddings=items_embeddings,
-                    ks=self.ks
-                )
+                    print(f"\nTop-{k} recommendations:")
+                    for rank, (vid, score) in enumerate(zip(retrieved_ids, retrieved_scores), start=1):
+                        vid_value = vid[0]
+                        video_data = df_videos_map.get(str(vid_value), {})
+                        title = video_data.get('title', 'Unknown title')
+                        cat = video_data.get('category', 'Unknown category')
+                        
+                        print(f"  {rank}. Video ID={vid_value}, Score={score:.4f}, Category={cat}")
+                        print(f"     Title: {title}")
 
-        # Усредняем потери
-        num_batches = len(self.val_loader)
-        metrics.update({
-            'val_loss': val_loss / num_batches,
-            'val_contrastive_loss': val_contrastive_loss / num_batches,
-            'val_recommendation_loss': val_recommendation_loss / num_batches
-        })
+                num_batches += 1
 
-        return metrics
+        # Вычисляем средние значения
+        metrics_dict['val_loss'] = total_loss / num_batches
+        metrics_dict['val_contrastive_loss'] = total_contrastive_loss / num_batches
+        metrics_dict['val_recommendation_loss'] = total_recommendation_loss / num_batches
+
+        return metrics_dict
 
     def _save_checkpoint(self, epoch, metrics):
-        """Сохранение чекпоинта модели."""
+        """Сохраняет чекпоинт и обновляет индекс."""
         checkpoint_dir = self.config['training']['checkpoint_dir']
-        self.model.save_pretrained(os.path.join(checkpoint_dir, f'model_epoch_{epoch}'))
-        
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
         # Сохраняем дополнительные данные
         checkpoint_meta = {
             'epoch': epoch,
@@ -167,18 +205,32 @@ class Trainer:
             'config': self.config  # Сохраняем конфиг для воспроизводимости
         }
         
-        # Сохраняем метаданные отдельно
         meta_path = os.path.join(checkpoint_dir, f'meta_epoch_{epoch}.pt')
         torch.save(checkpoint_meta, meta_path)
         
-        print(f"\nSaved checkpoint for epoch {epoch} in {checkpoint_dir}")
+        # Сохраняем модель
+        self.model.save_pretrained(os.path.join(checkpoint_dir, f'model_epoch_{epoch}'))
+        print(f"\nSaved checkpoint for epoch {epoch} with validation metrics:")
+        self._print_metrics(metrics)
+        
+        # Обновляем FAISS индекс с путем к текущему чекпоинту
+        try:
+            print("\nUpdating FAISS index...")
+            from indexer import main as update_index
+            # Создаем временный конфиг с обновленным путем к модели
+            temp_config = self.config.copy()
+            temp_config['training']['checkpoint_dir'] = os.path.join(checkpoint_dir, f'model_epoch_{epoch}')
+            update_index(config=temp_config)
+            print("FAISS index updated successfully")
+        except Exception as e:
+            print(f"Warning: Failed to update FAISS index: {str(e)}")
 
     def _print_metrics(self, metrics):
         """Вывод метрик в консоль."""
         # Группируем метрики по типу
         losses = {k: v for k, v in metrics.items() if 'loss' in k}
         precision = {k: v for k, v in metrics.items() if 'precision' in k}
-        recall = {k: v for k, v in metrics.items() if 'recall' in k}
+        recall = {k: v in metrics.items() if 'recall' in k}
         ndcg = {k: v for k, v in metrics.items() if 'ndcg' in k}
         coverage = {k: v for k, v in metrics.items() if 'coverage' in k}
         diversity = {k: v for k, v in metrics.items() if 'diversity' in k}
