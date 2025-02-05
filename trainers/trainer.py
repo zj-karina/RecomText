@@ -111,17 +111,40 @@ class Trainer:
         video_ids = np.load(ids_path)
         item_embeddings_array = np.load(embeddings_path)
         
-        # Демографические данные
+        # Загрузка демографических данных
         try:
-            user_demographics_df = pd.read_parquet('./data/user_demographics.parquet')
-            demographic_features = ['age_group', 'gender', 'location']
-            demographic_centroids = self._compute_demographic_centroids(
-                user_demographics_df, textual_history, item_embeddings_array
-            )
-        except FileNotFoundError:
-            print("Demographics data not found")
+            demographic_data = pd.read_parquet('./data/demographic_data.parquet')
+            demographic_features = ['age_group', 'sex', 'region']
+            
+            # Создаем центроиды для каждой демографической группы
+            demographic_centroids = {}
+            for feature in demographic_features:
+                demographic_centroids[feature] = {}
+                for group in demographic_data[feature].unique():
+                    # Получаем пользователей из этой группы
+                    group_users = demographic_data[demographic_data[feature] == group]['viewer_uid'].values
+                    
+                    # Получаем их эмбеддинги из истории просмотров
+                    group_embeddings = []
+                    for user_id in group_users:
+                        if user_id in textual_history['viewer_uid'].values:
+                            user_idx = textual_history[textual_history['viewer_uid'] == user_id].index[0]
+                            if user_idx < len(item_embeddings_array):
+                                group_embeddings.append(item_embeddings_array[user_idx])
+                    
+                    if group_embeddings:
+                        # Вычисляем центроид группы
+                        group_centroid = np.mean(group_embeddings, axis=0)
+                        demographic_centroids[feature][group] = torch.tensor(
+                            group_centroid, 
+                            device=self.device
+                        )
+            
+            print(f"Loaded demographic data with features: {demographic_features}")
+        except Exception as e:
+            print(f"Warning: Could not load demographic data: {str(e)}")
             demographic_centroids = None
-
+        
         # Инициализация метрик
         metrics_calculator = MetricsCalculator(sim_threshold=0.7)
         metrics_accum = {metric: 0.0 for metric in ["semantic_precision@k", "cross_category_relevance", "contextual_ndcg"]}
@@ -156,7 +179,7 @@ class Trainer:
                         item_embeddings_array,
                         metrics_calculator,
                         top_k,
-                        user_demographics_df,
+                        demographic_data,
                         demographic_centroids
                     )
                     self._update_metrics(metrics_accum, user_metrics)
@@ -164,27 +187,7 @@ class Trainer:
 
         return self._compile_metrics(total_loss, total_contrastive_loss, total_recommendation_loss, metrics_accum, num_users)
 
-    def _compute_demographic_centroids(self, user_demographics_df, textual_history, item_embeddings):
-        """Вычисление центроидов демографических групп"""
-        centroids = {}
-        for feature in ['age_group', 'gender', 'location']:
-            centroids[feature] = {}
-            for group in user_demographics_df[feature].unique():
-                group_users = user_demographics_df[user_demographics_df[feature] == group].index
-                embeddings = []
-                for user_id in group_users:
-                    user_items = textual_history[textual_history['user_id'] == user_id]
-                    if not user_items.empty:
-                        item_indices = user_items['item_id'].values
-                        embeddings.append(torch.mean(torch.tensor(
-                            item_embeddings[item_indices], 
-                            device=self.device
-                        ), dim=0))
-                if embeddings:
-                    centroids[feature][group] = F.normalize(torch.mean(torch.stack(embeddings), dim=0), p=2, dim=0)
-        return centroids
-
-    def _process_user(self, user_emb, target_emb, item_id, user_id, index, video_ids, df_videos_map, item_embeddings, metrics_calculator, top_k, user_demographics, centroids):
+    def _process_user(self, user_emb, target_emb, item_id, user_id, index, video_ids, df_videos_map, item_embeddings, metrics_calculator, top_k, demographic_data, demographic_centroids):
         """Обработка одного пользователя для расчета метрик"""
         # Поиск рекомендаций
         user_emb_np = user_emb.cpu().numpy().astype('float32')
@@ -202,28 +205,39 @@ class Trainer:
 
         # Демографические данные
         user_demo = {}
-        if user_demographics is not None and user_id.item() in user_demographics.index:
-            for feature in ['age_group', 'gender', 'location']:
-                user_demo[feature] = user_demographics.loc[user_id.item(), feature]
+        if demographic_data is not None and user_id.item() in demographic_data.index:
+            for feature in ['age_group', 'sex', 'region']:
+                user_demo[feature] = demographic_data.loc[user_id.item(), feature]
 
         # Целевой товар
         target_id = str(item_id.item())
         target_category = df_videos_map.get(target_id, {}).get('category', 'Unknown')
 
-        return metrics_calculator.compute_metrics(
-            target_emb,
-            rec_embeddings,
-            target_category,
-            rec_categories,
-            top_k,
-            user_demographics=user_demo,
-            demographic_centroids=centroids
-        )
+        # Добавляем демографические данные если они доступны
+        if demographic_centroids is not None:
+            user_demographics = {}
+            user_id = self.val_dataset.reverse_user_id_map[user_ids[i].item()]
+            user_demo = demographic_data[demographic_data['viewer_uid'] == user_id].iloc[0]
+            
+            for feature in demographic_features:
+                user_demographics[feature] = user_demo[feature]
+            
+            # Добавляем DAS метрики
+            das_metrics = metrics_calculator.demographic_alignment_score(
+                user_demographics,
+                rec_embeddings,
+                demographic_centroids
+            )
+            user_metrics = das_metrics
+
+        return user_metrics
 
     def _update_metrics(self, metrics_accum, user_metrics):
         """Обновление аккумуляторов метрик"""
-        for metric in metrics_accum:
-            metrics_accum[metric] += user_metrics.get(metric, 0)
+        for metric, value in user_metrics.items():
+            if metric not in metrics_accum:
+                metrics_accum[metric] = 0.0
+            metrics_accum[metric] += value
 
     def _compile_metrics(self, total_loss, contrastive_loss, recommendation_loss, metrics_accum, num_users):
         """Компиляция финальных метрик."""

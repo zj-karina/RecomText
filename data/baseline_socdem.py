@@ -179,6 +179,27 @@ def create_video_info_table(video_df: pd.DataFrame) -> pd.DataFrame:
     
     return video_info
 
+def create_demographic_data(targets_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Создает таблицу с демографическими данными пользователей
+    """
+    # Выбираем нужные колонки и удаляем дубликаты
+    demographic_data = targets_df[['viewer_uid', 'sex', 'age', 'region']].drop_duplicates()
+    
+    # Создаем возрастные группы
+    demographic_data['age_group'] = pd.cut(
+        demographic_data['age'],
+        bins=[0, 18, 25, 35, 45, 55, 100],
+        labels=['<18', '18-25', '26-35', '36-45', '46-55', '55+']
+    )
+    
+    # Заполняем пропуски
+    demographic_data['sex'] = demographic_data['sex'].fillna('unknown')
+    demographic_data['region'] = demographic_data['region'].fillna('unknown')
+    demographic_data['age_group'] = demographic_data['age_group'].fillna('unknown')
+    
+    return demographic_data
+
 def main():
     # Load data
     data, video, targets, all_events = load_data()
@@ -215,6 +236,10 @@ def main():
     # Создаем таблицу для инференса
     video_info = create_video_info_table(video)
     video_info.to_parquet('./data/video_info.parquet')
+
+    # Create demographic data
+    demographic_data = create_demographic_data(targets)
+    demographic_data.to_parquet('./data/demographic_data.parquet')
 
 if __name__ == "__main__":
     main() 
