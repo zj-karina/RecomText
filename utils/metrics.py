@@ -7,27 +7,34 @@ from typing import Dict, List, Union, Tuple
 class MetricsCalculator:
     """Калькулятор специализированных метрик для рекомендательной системы."""
     
-    def __init__(self, sim_threshold: float = 0.7):
+    def __init__(self, sim_threshold_precision: float = 0.79, sim_threshold_ndcg: float = 0.8):
         """
         Args:
             sim_threshold: порог для "успешной" семантической близости
         """
-        self.sim_threshold = sim_threshold
+        self.sim_threshold_precision = sim_threshold_precision
+        self.sim_threshold_ndcg = sim_threshold_ndcg
 
     def semantic_precision_at_k(self, 
-                              target_embedding: torch.Tensor,
-                              recommended_embeddings: torch.Tensor,
-                              k: int) -> float:
+                            target_embedding: torch.Tensor,
+                            recommended_embeddings: torch.Tensor,
+                            k: int) -> float:
         """
         Вычисляет Semantic Precision@K.
         """
+        # Вычисление косинусного сходства
         similarities = F.cosine_similarity(
             target_embedding.unsqueeze(0),
             recommended_embeddings,
             dim=1
         )
-        successes = (similarities >= self.sim_threshold).sum().item()
-        return successes / k
+
+        # Считаем, сколько попало выше порога
+        successes = (similarities >= self.sim_threshold_precision).sum().item()
+        precision_at_k = successes / min(k, recommended_embeddings.shape[0])
+
+        return precision_at_k
+
 
     def cross_category_relevance(self,
                                sp_at_k: float,
@@ -36,6 +43,8 @@ class MetricsCalculator:
         """
         Вычисляет Cross-Category Relevance на основе SP@K и категориальной избыточности.
         """
+        if not recommended_categories:
+            return sp_at_k
         same_category_count = sum(1 for cat in recommended_categories if cat == target_category)
         redundancy = same_category_count / len(recommended_categories)
         return 0.7 * sp_at_k + 0.3 * (1 - redundancy)
@@ -57,11 +66,11 @@ class MetricsCalculator:
         relevances = []
         for sim, rec_category in zip(similarities, recommended_categories):
             sim_val = sim.item()
-            if rec_category == target_category and sim_val >= 0.8:
+            if rec_category == target_category and sim_val >= self.sim_threshold_ndcg:
                 rel = 3
-            elif rec_category != target_category and sim_val >= 0.8:
+            elif rec_category != target_category and sim_val >= self.sim_threshold_ndcg:
                 rel = 2
-            elif rec_category == target_category and sim_val < 0.8:
+            elif rec_category == target_category and sim_val < self.sim_threshold_ndcg:
                 rel = 1
             else:
                 rel = 0
@@ -89,7 +98,10 @@ class MetricsCalculator:
             Dict с DAS scores для каждой демографической характеристики
         """
         das_scores = {}
-        
+
+        if user_demographics is None or demographic_centroids is None:
+            return das_scores
+
         for demo_feature, user_group in user_demographics.items():
             if demo_feature in demographic_centroids and user_group in demographic_centroids[demo_feature]:
                 group_centroid = demographic_centroids[demo_feature][user_group]
@@ -101,7 +113,6 @@ class MetricsCalculator:
                     dim=1
                 )
                 das_scores[f"das_{demo_feature}"] = similarities.mean().item()
-        
         return das_scores
 
     def compute_metrics(self,
