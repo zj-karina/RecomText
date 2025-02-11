@@ -7,7 +7,7 @@ from typing import Dict, List, Union, Tuple
 class MetricsCalculator:
     """Калькулятор специализированных метрик для рекомендательной системы."""
     
-    def __init__(self, sim_threshold_precision: float = 0.07, sim_threshold_ndcg: float = 0.8):
+    def __init__(self, sim_threshold_precision: float = 0.79, sim_threshold_ndcg: float = 0.8):
         """
         Args:
             sim_threshold: порог для "успешной" семантической близости
