@@ -224,9 +224,10 @@ class Trainer:
             # Метаданные рекомендаций
             rec_categories = []
             for idx in indices[0]:
-                video_id = str(video_ids[idx])
-                if video_id in df_videos_map:
-                    rec_categories.append(df_videos_map[video_id].get('category', 'Unknown'))
+                video_id = video_ids[idx][0]
+                orig_video_id = self.val_loader.dataset.reverse_item_id_map.get(video_id)
+                if orig_video_id in df_videos_map:
+                    rec_categories.append(df_videos_map[orig_video_id].get('category', 'Unknown'))
                 else:
                     rec_categories.append('Unknown')
         else:
