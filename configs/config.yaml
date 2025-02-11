@@ -11,7 +11,7 @@ training:
   epochs: 5
   learning_rate: 5e-5
   lambda_rec: 0.2
-  contrastive_loss: "infonce" # cos_emb, infonce
+  contrastive_loss: "cos_emb" # cos_emb, ...
   tau: 0.7
   validation_size: 0.1
   random_seed: 42

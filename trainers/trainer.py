@@ -21,15 +21,8 @@ class Trainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
 
-        self.tau = self.config.get('training', {}).get('tau', 0.07)  # Температурный коэффициент (гиперпараметр)
-        name_contrastive_loss = config.get('training', {}).get('contrastive_loss', 'cos_emb')
-
+        name_contrastive_loss = config.get('training', {}).get('contrastive_loss', 'cos_emb') # for future experiments with new losses
         self.recommendation_loss_fn, self.contrastive_loss_fn = get_losses(name_contrastive_loss)
-        
-        if name_contrastive_loss == 'infonce':
-            self.compute_contrastive_loss = self.compute_contrastive_infonce_loss
-        else:
-            self.compute_contrastive_loss = self.compute_contrastive_cos_emb_loss
 
         self.metrics_calculator = MetricsCalculator()
         
@@ -247,8 +240,9 @@ class Trainer:
                 user_demographics = {feature: user_row[feature] for feature in demographic_features}  # Заполняем user_demo сразу
 
         # Целевой товар
-        target_id = str(items_ids[0].item())
-        target_category = df_videos_map.get(target_id, {}).get('category', 'Unknown')
+        target_id = items_ids[0].item()
+        orig_target_video_id = self.val_loader.dataset.reverse_item_id_map.get(target_id)
+        target_category = df_videos_map.get(orig_target_video_id, {}).get('category', 'Unknown')
 
         user_metrics = metrics_calculator.compute_metrics(
             target_emb,
@@ -369,7 +363,7 @@ class Trainer:
         labels = torch.arange(len(user_embeddings)).to(self.device)
         return self.recommendation_loss_fn(logits, labels)
 
-    def compute_contrastive_cos_emb_loss(self, items_embeddings, user_embeddings):
+    def compute_contrastive_loss(self, items_embeddings, user_embeddings):
         """Вычисление контрастивной потери."""
 
         batch_size = items_embeddings.size(0)
@@ -388,24 +382,6 @@ class Trainer:
         )
         
         return contrastive_goods_loss + contrastive_users_loss
-
-    def compute_contrastive_infonce_loss(self, items_embeddings, user_embeddings):
-        """Контрастивная потеря между user/user и item/item (InfoNCE Loss)"""
-        batch_size = items_embeddings.size(0)
-
-        # Косинусные сходства внутри батча пользователей (user-user)
-        user_logits = torch.matmul(user_embeddings, user_embeddings.T) / self.tau  # (B, B)
-        user_labels = torch.arange(batch_size, device=self.device)  # (B,)
-
-        # Косинусные сходства внутри батча товаров (item-item)
-        item_logits = torch.matmul(items_embeddings, items_embeddings.T) / self.tau  # (B, B)
-        item_labels = torch.arange(batch_size, device=self.device)  # (B,)
-
-        # InfoNCE Loss = CrossEntropy между логитами и индексами (позитив = сам себя)
-        contrastive_users_loss = self.contrastive_loss_fn(user_logits, user_labels)
-        contrastive_items_loss = self.contrastive_loss_fn(item_logits, item_labels)
-
-        return contrastive_users_loss + contrastive_items_loss
 
     def to_device(self, x):
         """Перемещение данных на устройство."""
