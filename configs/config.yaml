@@ -12,7 +12,6 @@ training:
   learning_rate: 5e-5
   lambda_rec: 0.2
   contrastive_loss: "cos_emb" # cos_emb, ...
-  tau: 0.7
   validation_size: 0.1
   random_seed: 42
   checkpoint_dir: "checkpoints"  # Базовая директория для чекпоинтов
