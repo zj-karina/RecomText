@@ -363,10 +363,10 @@ class Trainer:
         return loss.item(), contrastive_loss.item(), recommendation_loss.item()
     
     def compute_recommendation_loss(self, user_embeddings, items_embeddings):
-            """Вычисление потери рекомендаций."""
-            logits = torch.matmul(user_embeddings, items_embeddings.T)
-            labels = torch.arange(len(user_embeddings)).to(self.device)
-            return self.recommendation_loss_fn(logits, labels)
+        """Вычисление потери рекомендаций."""
+        logits = torch.matmul(user_embeddings, items_embeddings.T)
+        labels = torch.arange(len(user_embeddings)).to(self.device)
+        return self.recommendation_loss_fn(logits, labels)
 
     def compute_contrastive_cos_emb_loss(self, items_embeddings, user_embeddings):
         """Вычисление контрастивной потери."""
