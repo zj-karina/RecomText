@@ -78,7 +78,6 @@ def main(config=None):
     text_model_name = config['model']['text_model_name']
     batch_size = config['data']['batch_size']
     max_length = config['data']['max_length']
-    checkpoint_dir = config['training']['checkpoint_dir']
     index_path = config['inference'].get('index_path', 'video_index.faiss')
     ids_path = config['inference'].get('ids_path', 'video_ids.npy')
     
@@ -104,7 +103,7 @@ def main(config=None):
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
     # 5) Инициализируем модель с размерами из датасета
-    model = MultimodalRecommendationModel.from_pretrained(checkpoint_dir)
+    model = MultimodalRecommendationModel.from_pretrained(model_path)
 
     model.to(device)
     model.eval()

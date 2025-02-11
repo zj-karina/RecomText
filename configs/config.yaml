@@ -5,12 +5,14 @@ model:
 
 data:
   max_length: 128
-  batch_size: 32
+  batch_size: 128
 
 training:
-  epochs: 1
+  epochs: 5
   learning_rate: 5e-5
   lambda_rec: 0.2
+  contrastive_loss: "infonce" # cos_emb, infonce
+  tau: 0.7
   validation_size: 0.1
   random_seed: 42
   checkpoint_dir: "checkpoints"  # Базовая директория для чекпоинтов
@@ -18,10 +20,14 @@ training:
   save_steps: 1                  # Сохранять каждые N эпох
   save_total_limit: 3           # Максимальное количество сохраняемых чекпоинтов 
 
+metrics:
+  sim_threshold_precision: 0.79
+  sim_threshold_ndcg: 0.8
+  
 inference:
   embeddings_path: "./data/item_embeddings.npy" 
   index_path: "./data/video_index.faiss"      
   ids_path: "./data/video_ids.npy"        
   model_path: "intfloat/multilingual-e5-large"  # Путь к директории с моделью
   num_examples: 5  # Количество примеров для показа
-  top_k: 10       # Количество рекомендаций для каждого пользователя 
+  top_k: 10       # Количество рекомендаций для каждого пользователя

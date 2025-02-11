@@ -20,10 +20,18 @@ class Trainer:
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
+
+        self.tau = self.config.get('training', {}).get('tau', 0.07)  # Температурный коэффициент (гиперпараметр)
+        name_contrastive_loss = config.get('training', {}).get('contrastive_loss', 'cos_emb')
+
+        self.recommendation_loss_fn, self.contrastive_loss_fn = get_losses(name_contrastive_loss)
         
-        self.contrastive_loss_fn, self.recommendation_loss_fn = get_losses()
+        if name_contrastive_loss == 'infonce':
+            self.compute_contrastive_loss = self.compute_contrastive_infonce_loss
+        else:
+            self.compute_contrastive_loss = self.compute_contrastive_cos_emb_loss
+
         self.metrics_calculator = MetricsCalculator()
-        self.ks = config.get('evaluation', {}).get('ks', [1, 5, 10])
         
         self.best_metric = float('-inf')
         self.best_epoch = 0
@@ -61,7 +69,7 @@ class Trainer:
                     break
 
     def train_epoch(self):
-        """Один эпох обучения."""
+        """Одна эпоха обучения."""
         self.model.train()
         total_loss = 0
         total_contrastive_loss = 0
@@ -107,9 +115,13 @@ class Trainer:
                 return None
 
         # Загрузка индекса и данных
-        index = faiss.read_index(index_path)
-        video_ids = np.load(ids_path)
-        item_embeddings_array = np.load(embeddings_path)
+        try:
+            index = faiss.read_index(index_path)
+            video_ids = np.load(ids_path)
+            item_embeddings_array = np.load(embeddings_path)
+        except Exception as e:
+            print(f"Error loading index or embeddings: {str(e)}")
+            return None
         
         # Загрузка демографических данных
         try:
@@ -146,7 +158,10 @@ class Trainer:
             demographic_centroids = None
         
         # Инициализация метрик
-        metrics_calculator = MetricsCalculator(sim_threshold=0.7)
+        sim_threshold_precision = self.config['metrics'].get('sim_threshold_precision', 0.07)
+        sim_threshold_ndcg = self.config['metrics'].get('sim_threshold_ndcg', 0.8)
+        metrics_calculator = MetricsCalculator(sim_threshold_precision=sim_threshold_precision,
+                                               sim_threshold_ndcg=sim_threshold_ndcg)
         metrics_accum = {metric: 0.0 for metric in ["semantic_precision@k", "cross_category_relevance", "contextual_ndcg"]}
         num_users = 0
         top_k = self.config['inference'].get('top_k', 10)
@@ -154,13 +169,13 @@ class Trainer:
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(self.val_loader, desc="Validation")):
                 # Обработка батча
-                items_text_inputs, user_text_inputs, item_ids, user_ids = [
+                items_text_inputs, user_text_inputs, items_ids, user_ids = [
                     self.to_device(x) for x in batch
                 ]
                 
                 # Forward pass
                 items_embeddings, user_embeddings = self.model(
-                    items_text_inputs, user_text_inputs, item_ids, user_ids
+                    items_text_inputs, user_text_inputs, items_ids, user_ids
                 )
 
                 # Нормализация эмбеддингов
@@ -171,13 +186,16 @@ class Trainer:
                 rec_loss = self.compute_recommendation_loss(user_embeddings, items_embeddings)
                 con_loss = self.compute_contrastive_loss(items_embeddings, user_embeddings)
                 total_loss += (con_loss + self.config['training']['lambda_rec'] * rec_loss).item()
+                total_recommendation_loss += rec_loss
+                total_contrastive_loss += con_loss
                 
                 # Поиск рекомендаций и расчет метрик
                 for i in range(user_embeddings.size(0)):
+
                     user_metrics = self._process_user(
                         user_embeddings[i], 
                         items_embeddings[i], 
-                        item_ids[i], 
+                        items_ids[i], 
                         user_ids[i], 
                         index, 
                         video_ids, 
@@ -186,6 +204,7 @@ class Trainer:
                         metrics_calculator,
                         top_k,
                         demographic_data,
+                        demographic_features,
                         demographic_centroids
                     )
                     self._update_metrics(metrics_accum, user_metrics)
@@ -193,48 +212,52 @@ class Trainer:
 
         return self._compile_metrics(total_loss, total_contrastive_loss, total_recommendation_loss, metrics_accum, num_users)
 
-    def _process_user(self, user_emb, target_emb, item_id, user_id, index, video_ids, df_videos_map, item_embeddings, metrics_calculator, top_k, demographic_data, demographic_centroids):
+    def _process_user(self, user_emb, target_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings, metrics_calculator, top_k, demographic_data, demographic_features, demographic_centroids):
         """Обработка одного пользователя для расчета метрик"""
         # Поиск рекомендаций
         user_emb_np = user_emb.cpu().numpy().astype('float32')
         distances, indices = index.search(user_emb_np.reshape(1, -1), top_k)
         
-        # Получение рекомендаций
-        rec_embeddings = torch.tensor(item_embeddings[indices[0]], device=self.device)
-        rec_embeddings = F.normalize(rec_embeddings, p=2, dim=1)
-        
-        # Метаданные рекомендаций
-        rec_categories = []
-        for idx in indices[0]:
-            video_id = str(video_ids[idx])
-            rec_categories.append(df_videos_map.get(video_id, {}).get('category', 'Unknown'))
+        if len(indices) > 0 and len(indices[0]) > 0:
+            # Получение рекомендаций
+            rec_embeddings = torch.tensor(item_embeddings[indices[0]], device=self.device)
+            # Метаданные рекомендаций
+            rec_categories = []
+            for idx in indices[0]:
+                video_id = str(video_ids[idx])
+                if video_id in df_videos_map:
+                    rec_categories.append(df_videos_map[video_id].get('category', 'Unknown'))
+                else:
+                    rec_categories.append('Unknown')
+        else:
+            rec_embeddings = torch.tensor([], device=self.device)
+            rec_categories = []
 
         # Демографические данные
-        user_demo = {}
-        if demographic_data is not None and user_id.item() in demographic_data.index:
-            for feature in ['age_group', 'sex', 'region']:
-                user_demo[feature] = demographic_data.loc[user_id.item(), feature]
+        user_demographics = {}
+        if demographic_data is not None:
+            orig_user_id = self.val_loader.dataset.reverse_user_id_map.get(user_id.item())
+
+            # Фильтруем нужного пользователя по его ID
+            user_row = demographic_data[demographic_data['viewer_uid'] == orig_user_id]
+
+            if not user_row.empty:  # Проверяем, есть ли данные
+                user_row = user_row.iloc[0]
+                user_demographics = {feature: user_row[feature] for feature in demographic_features}  # Заполняем user_demo сразу
 
         # Целевой товар
-        target_id = str(item_id.item())
+        target_id = str(items_ids[0].item())
         target_category = df_videos_map.get(target_id, {}).get('category', 'Unknown')
 
-        # Добавляем демографические данные если они доступны
-        if demographic_centroids is not None:
-            user_demographics = {}
-            user_id = self.val_dataset.reverse_user_id_map[user_ids[i].item()]
-            user_demo = demographic_data[demographic_data['viewer_uid'] == user_id].iloc[0]
-            
-            for feature in demographic_features:
-                user_demographics[feature] = user_demo[feature]
-            
-            # Добавляем DAS метрики
-            das_metrics = metrics_calculator.demographic_alignment_score(
-                user_demographics,
-                rec_embeddings,
-                demographic_centroids
-            )
-            user_metrics = das_metrics
+        user_metrics = metrics_calculator.compute_metrics(
+            target_emb,
+            rec_embeddings,
+            target_category,
+            rec_categories,
+            top_k,
+            user_demographics,
+            demographic_centroids
+        )
 
         return user_metrics
 
@@ -308,13 +331,13 @@ class Trainer:
 
     def training_step(self, batch):
         """Один шаг обучения."""
-        items_text_inputs, user_text_inputs, item_ids, user_ids = [
+        items_text_inputs, user_text_inputs, items_ids, user_ids = [
             self.to_device(x) for x in batch
         ]
 
         # Forward pass
         items_embeddings, user_embeddings = self.model(
-            items_text_inputs, user_text_inputs, item_ids, user_ids
+            items_text_inputs, user_text_inputs, items_ids, user_ids
         )
 
         # Нормализация эмбеддингов
@@ -338,15 +361,16 @@ class Trainer:
         self.optimizer.step()
 
         return loss.item(), contrastive_loss.item(), recommendation_loss.item()
-
+    
     def compute_recommendation_loss(self, user_embeddings, items_embeddings):
-        """Вычисление потери рекомендаций."""
-        logits = torch.matmul(user_embeddings, items_embeddings.T)
-        labels = torch.arange(len(user_embeddings)).to(self.device)
-        return self.recommendation_loss_fn(logits, labels)
+            """Вычисление потери рекомендаций."""
+            logits = torch.matmul(user_embeddings, items_embeddings.T)
+            labels = torch.arange(len(user_embeddings)).to(self.device)
+            return self.recommendation_loss_fn(logits, labels)
 
-    def compute_contrastive_loss(self, items_embeddings, user_embeddings):
+    def compute_contrastive_cos_emb_loss(self, items_embeddings, user_embeddings):
         """Вычисление контрастивной потери."""
+
         batch_size = items_embeddings.size(0)
         positive_labels = torch.ones(batch_size, device=self.device)
         
@@ -363,6 +387,24 @@ class Trainer:
         )
         
         return contrastive_goods_loss + contrastive_users_loss
+
+    def compute_contrastive_infonce_loss(self, items_embeddings, user_embeddings):
+        """Контрастивная потеря между user/user и item/item (InfoNCE Loss)"""
+        batch_size = items_embeddings.size(0)
+
+        # Косинусные сходства внутри батча пользователей (user-user)
+        user_logits = torch.matmul(user_embeddings, user_embeddings.T) / self.tau  # (B, B)
+        user_labels = torch.arange(batch_size, device=self.device)  # (B,)
+
+        # Косинусные сходства внутри батча товаров (item-item)
+        item_logits = torch.matmul(items_embeddings, items_embeddings.T) / self.tau  # (B, B)
+        item_labels = torch.arange(batch_size, device=self.device)  # (B,)
+
+        # InfoNCE Loss = CrossEntropy между логитами и индексами (позитив = сам себя)
+        contrastive_users_loss = self.contrastive_loss_fn(user_logits, user_labels)
+        contrastive_items_loss = self.contrastive_loss_fn(item_logits, item_labels)
+
+        return contrastive_users_loss + contrastive_items_loss
 
     def to_device(self, x):
         """Перемещение данных на устройство."""
