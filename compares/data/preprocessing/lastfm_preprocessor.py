@@ -112,6 +112,4 @@ class LastFMPreprocessor:
         # Обновляем список признаков после всех преобразований
         available_features = [f for f in all_features if f in df.columns]
         
-        self.logger.info(f"Available features after processing: {available_features}")
-        
         return df[available_features] 
