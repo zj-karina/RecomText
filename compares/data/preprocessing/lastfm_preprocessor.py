@@ -11,14 +11,11 @@ class LastFMPreprocessor:
         
     def _process_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Обработка временных признаков"""
+        df = df.copy()
+        
         if 'signup' in df.columns:
             # Преобразуем строковую дату в timestamp с учетом формата "MMM d, YYYY"
-            df['signup'] = pd.to_datetime(df['signup'], format='%b %d, %Y').astype('int64') // 10**9
-        
-        if 'timestamp' in df.columns:
-            # Убеждаемся, что timestamp в секундах
-            if df['timestamp'].max() > 1e12:  # если в миллисекундах
-                df['timestamp'] = df['timestamp'] // 1000
+            df['timestamp'] = pd.to_datetime(df['signup'], format='%b %d, %Y').astype('int64') // 10**9
         
         return df
     
@@ -62,13 +59,8 @@ class LastFMPreprocessor:
         df['user_id'] = self.user_encoder.fit_transform(df['user_id'])
         df['artist_id'] = self.artist_encoder.fit_transform(df['artist_id'])
         
-        # Обработка временных признаков
-        try:
-            df = self._process_temporal_features(df)
-        except Exception as e:
-            self.logger.warning(f"Error processing temporal features: {str(e)}. Skipping temporal features.")
-            if 'signup' in df.columns:
-                df = df.drop(columns=['signup'])
+        # Обработка временных признаков (создаем timestamp из signup)
+        df = self._process_temporal_features(df)
         
         # Обработка демографических признаков
         if any(field in df.columns for field in ['gender', 'age', 'country']):
