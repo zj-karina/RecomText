@@ -3,7 +3,7 @@ import numpy as np
 from typing import Dict, List, Optional
 from sklearn.preprocessing import LabelEncoder
 from datetime import datetime
-from RecomText.compares.data.preprocessing.feature_preprocessor import FeaturePreprocessor
+from data.preprocessing.feature_preprocessor import FeaturePreprocessor
 
 class RutubePreprocessor:
     def __init__(self):
