@@ -3,6 +3,7 @@ import numpy as np
 from typing import Dict, List, Optional
 from sklearn.preprocessing import LabelEncoder
 from datetime import datetime
+from data.preprocessing.feature_preprocessor import FeaturePreprocessor
 
 class LastFMPreprocessor:
     def __init__(self):
@@ -19,7 +20,13 @@ class LastFMPreprocessor:
         if 'age' in df.columns:
             df['age'] = pd.to_numeric(df['age'], errors='coerce')
             df['age'] = df['age'].fillna(df['age'].mean())
+            df.loc[df['age'] < 13, 'age'] = 13
+            df.loc[df['age'] > 90, 'age'] = 90
+            df['age'] = (df['age'] - df['age'].mean()) / df['age'].std()
             
+        if 'country' in df.columns:
+            df['country'] = df['country'].fillna('unknown')
+        
         return df
         
     def preprocess(self, 
@@ -49,25 +56,33 @@ class LastFMPreprocessor:
         df['user_id'] = self.user_encoder.fit_transform(df['user_id'])
         df['artist_id'] = self.artist_encoder.fit_transform(df['artist_id'])
         
-        # Обработка временных признаков (создаем timestamp из signup)
-        # df['timestamp'] = pd.to_datetime(df['signup'], format='%b %d, %Y').astype('int64') // 10**9
-        df['timestamp'] = pd.to_datetime(df['signup'], format='%b %d, %Y', errors='coerce').astype('int64') // 10**9
-
-        # Обработка демографических признаков
-        if any(field in df.columns for field in ['gender', 'age', 'country']):
-            df = self._process_demographic_features(df)
+        # Обработка временных признаков
+        if 'timestamp' in df.columns:
+            df['timestamp'] = pd.to_datetime(df['timestamp']).astype('int64') // 10**9
         
-        # Обработка текстовых признаков через FeaturePreprocessor
-        text_fields = feature_config['field_mapping'].get('TEXT_FIELDS', [])
-        if text_fields:
-            feature_processor = FeaturePreprocessor()
-            df = feature_processor.process_features(
-                df=df,
-                feature_config=feature_config,
-                output_dir='dataset',  # временная директория
-                experiment_name='temp',
-                dataset_type='lastfm'
-            )
+        # Обработка социально-демографических признаков
+        if 'gender' in df.columns:
+            df['gender'] = df['gender'].map({'m': 'male', 'f': 'female'}).fillna('unknown')
+        
+        if 'age' in df.columns:
+            df['age'] = pd.to_numeric(df['age'], errors='coerce')
+            df['age'] = df['age'].fillna(df['age'].mean())
+            df.loc[df['age'] < 13, 'age'] = 13
+            df.loc[df['age'] > 90, 'age'] = 90
+            df['age'] = (df['age'] - df['age'].mean()) / df['age'].std()
+        
+        if 'country' in df.columns:
+            df['country'] = df['country'].fillna('unknown')
+        
+        # Обработка текстовых и других признаков через FeaturePreprocessor
+        feature_processor = FeaturePreprocessor()
+        df = feature_processor.process_features(
+            df=df,
+            feature_config=feature_config,
+            output_dir='dataset',
+            experiment_name='temp',
+            dataset_type='lastfm'
+        )
         
         # Обработка категориальных признаков
         categorical_features = feature_config['features'].get('categorical_features', [])
@@ -85,6 +100,12 @@ class LastFMPreprocessor:
         all_features = set()
         for feature_type in ['interaction_features', 'user_features', 'item_features']:
             all_features.update(feature_config['features'].get(feature_type, []))
+            
+        # Добавляем эмбеддинги текстовых полей
+        text_fields = feature_config['field_mapping'].get('TEXT_FIELDS', [])
+        for field in text_fields:
+            emb_features = [f'{field}_emb_{i}' for i in range(384)]  # Размерность BERT
+            all_features.update(emb_features)
             
         # Оставляем только нужные колонки
         return df[list(all_features)] 

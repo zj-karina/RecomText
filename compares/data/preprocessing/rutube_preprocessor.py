@@ -3,6 +3,7 @@ import numpy as np
 from typing import Dict, List, Optional
 from sklearn.preprocessing import LabelEncoder
 from datetime import datetime
+from RecomText.compares.data.preprocessing.feature_preprocessor import FeaturePreprocessor
 
 class RutubePreprocessor:
     def __init__(self):
@@ -90,6 +91,16 @@ class RutubePreprocessor:
         # Обработка социально-демографических признаков
         df = self._process_demographic_features(df)
         
+        # Обработка текстовых и других признаков через FeaturePreprocessor
+        feature_processor = FeaturePreprocessor()
+        df = feature_processor.process_features(
+            df=df,
+            feature_config=feature_config,
+            output_dir='dataset',
+            experiment_name='temp',
+            dataset_type='rutube'
+        )
+        
         # Обработка категориальных признаков
         categorical_features = feature_config['features'].get('categorical_features', [])
         for feature in categorical_features:
@@ -106,6 +117,12 @@ class RutubePreprocessor:
         all_features = set()
         for feature_type in ['interaction_features', 'user_features', 'item_features']:
             all_features.update(feature_config['features'].get(feature_type, []))
+            
+        # Добавляем эмбеддинги текстовых полей
+        text_fields = feature_config['field_mapping'].get('TEXT_FIELDS', [])
+        for field in text_fields:
+            emb_features = [f'{field}_emb_{i}' for i in range(384)]  # Размерность BERT
+            all_features.update(emb_features)
             
         # Добавляем дополнительные признаки, если они нужны
         if 'hour_sin' in numerical_features or 'hour_cos' in numerical_features:

@@ -5,19 +5,30 @@ from typing import List, Dict, Optional
 import os
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 import logging
+import torch
 
 class FeaturePreprocessor:
     def __init__(
         self,
         text_model_name: str = 'sentence-transformers/all-MiniLM-L6-v2',
-        embedding_dim: int = 16  # размерность для категориальных признаков
+        embedding_dim: int = 16,
+        device: str = None  # Добавляем параметр device
     ):
+        # Определяем устройство: если не указано явно, используем CUDA при наличии
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
+        self.device = device
         self.text_model = SentenceTransformer(text_model_name)
+        self.text_model.to(device)  # Перемещаем модель на нужное устройство
+        
         self.embedding_dim = embedding_dim
         self.text_embedding_size = self.text_model.get_sentence_embedding_dimension()
         self.label_encoders = {}
         self.scalers = {}
         self.logger = logging.getLogger(__name__)
+        
+        self.logger.info(f"Using device: {device} for text embeddings generation")
         
     def _process_text_features(self, df: pd.DataFrame, text_fields: List[str]) -> pd.DataFrame:
         """Обработка текстовых признаков"""
@@ -26,12 +37,14 @@ class FeaturePreprocessor:
         for field in text_fields:
             if field in df.columns:
                 self.logger.info(f"Processing text field: {field}")
-                # Батчевая обработка для оптимизации
                 texts = df[field].fillna('').tolist()
+                
+                # Используем device при генерации эмбеддингов
                 embeddings = self.text_model.encode(
                     texts,
                     batch_size=32,
-                    show_progress_bar=True
+                    show_progress_bar=True,
+                    device=self.device  # Явно указываем устройство
                 )
                 
                 # Создаем колонки для эмбеддингов
@@ -46,8 +59,6 @@ class FeaturePreprocessor:
                 # Удаляем исходное текстовое поле
                 df_processed = df_processed.drop(columns=[field])
                 
-                self.logger.info(f"Created {len(emb_columns)} embedding features for {field}")
-        
         return df_processed
     
     def _process_categorical_features(
@@ -61,45 +72,17 @@ class FeaturePreprocessor:
         
         for field in categorical_fields:
             if field in df.columns:
-                # Заполняем пропуски специальным значением
                 df_processed[field] = df_processed[field].fillna('unknown')
                 
-                # Создаем или используем существующий encoder
                 if is_train or field not in self.label_encoders:
                     self.label_encoders[field] = LabelEncoder()
                     df_processed[field] = self.label_encoders[field].fit_transform(df_processed[field])
                 else:
-                    # Обрабатываем новые категории в тестовых данных
                     known_categories = set(self.label_encoders[field].classes_)
                     df_processed[field] = df_processed[field].map(
                         lambda x: x if x in known_categories else 'unknown'
                     )
                     df_processed[field] = self.label_encoders[field].transform(df_processed[field])
-                
-                # Создаем эмбеддинги
-                n_categories = len(self.label_encoders[field].classes_)
-                
-                if n_categories > self.embedding_dim:
-                    embeddings = np.random.normal(0, 1/self.embedding_dim, 
-                                               (n_categories, self.embedding_dim))
-                else:
-                    embeddings = np.eye(n_categories)
-                    if n_categories < self.embedding_dim:
-                        padding = np.zeros((n_categories, self.embedding_dim - n_categories))
-                        embeddings = np.hstack([embeddings, padding])
-                
-                # Получаем эмбеддинги для каждого значения
-                category_embeddings = embeddings[df_processed[field]]
-                
-                # Создаем колонки для эмбеддингов
-                emb_columns = [f'{field}_emb_{i}' for i in range(self.embedding_dim)]
-                df_processed = df_processed.join(
-                    pd.DataFrame(
-                        category_embeddings,
-                        columns=emb_columns,
-                        index=df_processed.index
-                    )
-                )
                 
         return df_processed
 
@@ -114,22 +97,16 @@ class FeaturePreprocessor:
         
         for field in numerical_fields:
             if field in df.columns:
-                # Заполняем пропуски средним значением
                 if is_train:
                     fill_value = df_processed[field].mean()
-                else:
-                    fill_value = self.scalers[field].mean_
-                df_processed[field] = df_processed[field].fillna(fill_value)
-                
-                # Нормализуем признаки
-                if is_train:
                     self.scalers[field] = StandardScaler()
                     df_processed[field] = self.scalers[field].fit_transform(
-                        df_processed[field].values.reshape(-1, 1)
+                        df_processed[field].fillna(fill_value).values.reshape(-1, 1)
                     )
                 else:
+                    fill_value = self.scalers[field].mean_
                     df_processed[field] = self.scalers[field].transform(
-                        df_processed[field].values.reshape(-1, 1)
+                        df_processed[field].fillna(fill_value).values.reshape(-1, 1)
                     )
                 
         return df_processed
@@ -148,7 +125,7 @@ class FeaturePreprocessor:
         
         Args:
             df: DataFrame с признаками
-            feature_config: Конфигурация признаков для конкретного датасета
+            feature_config: Конфигурация признаков
             output_dir: Директория для сохранения
             experiment_name: Название эксперимента
             dataset_type: Тип датасета ('rutube' или 'lastfm')
@@ -157,7 +134,9 @@ class FeaturePreprocessor:
         os.makedirs(f"{output_dir}/{experiment_name}", exist_ok=True)
         
         # Получаем конфигурацию для конкретного датасета
-        dataset_config = feature_config[dataset_type]
+        dataset_config = (feature_config[dataset_type] 
+                         if dataset_type in feature_config 
+                         else feature_config)
         
         # Получаем списки признаков разных типов
         text_fields = dataset_config['field_mapping'].get('TEXT_FIELDS', [])
@@ -166,17 +145,16 @@ class FeaturePreprocessor:
         
         # Обрабатываем признаки
         if text_fields:
+            self.logger.info(f"Processing text fields: {text_fields}")
             df = self._process_text_features(df, text_fields)
         
         if categorical_fields:
+            self.logger.info(f"Processing categorical fields: {categorical_fields}")
             df = self._process_categorical_features(df, categorical_fields, is_train)
             
         if numerical_fields:
+            self.logger.info(f"Processing numerical fields: {numerical_fields}")
             df = self._process_numerical_features(df, numerical_fields, is_train)
-        
-        # Сохраняем результат
-        output_path = f"{output_dir}/{experiment_name}/{experiment_name}.{dataset_type}"
-        df.to_csv(output_path, sep="\t", index=False)
         
         return df
 
