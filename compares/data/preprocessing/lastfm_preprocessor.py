@@ -8,16 +8,6 @@ class LastFMPreprocessor:
     def __init__(self):
         self.user_encoder = LabelEncoder()
         self.artist_encoder = LabelEncoder()
-        
-    def _process_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Обработка временных признаков"""
-        df = df.copy()
-        
-        if 'signup' in df.columns:
-            # Преобразуем строковую дату в timestamp с учетом формата "MMM d, YYYY"
-            df['timestamp'] = pd.to_datetime(df['signup'], format='%b %d, %Y').astype('int64') // 10**9
-        
-        return df
     
     def _process_demographic_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Обработка демографических признаков"""
@@ -60,8 +50,9 @@ class LastFMPreprocessor:
         df['artist_id'] = self.artist_encoder.fit_transform(df['artist_id'])
         
         # Обработка временных признаков (создаем timestamp из signup)
-        df = self._process_temporal_features(df)
-        
+        # df['timestamp'] = pd.to_datetime(df['signup'], format='%b %d, %Y').astype('int64') // 10**9
+        df['timestamp'] = pd.to_datetime(df['signup'], format='%b %d, %Y', errors='coerce').astype('int64') // 10**9
+
         # Обработка демографических признаков
         if any(field in df.columns for field in ['gender', 'age', 'country']):
             df = self._process_demographic_features(df)

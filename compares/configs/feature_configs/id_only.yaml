@@ -21,8 +21,8 @@ lastfm:
     interaction_features: [
       "user_id",
       "artist_id",
+      "timestamp",
       "plays",
-      "signup"
     ]
     user_features: ["user_id"]
     item_features: ["artist_id"]
@@ -32,4 +32,4 @@ lastfm:
     USER_ID_FIELD: "user_id"
     ITEM_ID_FIELD: "artist_id"
     RATING_FIELD: "plays"
-    TIME_FIELD: "signup" 
+    TIME_FIELD: "timestamp" 
