@@ -88,14 +88,7 @@ def run_experiment(
             raise ValueError(f"Unknown dataset type: {dataset_type}")
         
         if dataset_type == 'rutube':
-            column_mapping = {
-                    'viewer_uid': 'user_id',
-                    'rutube_video_id': 'item_id',
-                    'total_watchtime': 'watch_time'
-                }
-                
-            df = df.rename(columns=column_mapping)
-            df['item_id'] = df['item_id'].apply(lambda x: x.strip('video_'))
+            df['rutube_video_id'] = df['rutube_video_id'].apply(lambda x: x.strip('video_'))
         
         # Инициализируем препроцессор датасета
         preprocessor = dataset_preprocessor()
@@ -103,7 +96,7 @@ def run_experiment(
         if feature_config in ['text_and_id', 'full_features']:
             # Загружаем конфигурацию признаков
             with open(f'configs/feature_configs/{feature_config}.yaml', 'r') as f:
-                feature_config_dict = yaml.safe_load(f)
+                feature_config_dict = yaml.safe_load(f)[dataset_type]
             
             # Предобработка данных с учетом специфики датасета
             df = preprocessor.preprocess(df, feature_config_dict[dataset_type])
@@ -180,7 +173,7 @@ def run_experiment(
         else:
             # Используем базовую конфигурацию только с ID
             with open(f'configs/feature_configs/{feature_config}.yaml', 'r') as f:
-                features = yaml.safe_load(f)['features']
+                features = yaml.safe_load(f)[dataset_type]
                 
             # Базовая предобработка данных через специфичный препроцессор
             df = preprocessor.preprocess(df, features)

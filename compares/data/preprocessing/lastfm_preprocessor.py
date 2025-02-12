@@ -2,15 +2,36 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional
 from sklearn.preprocessing import LabelEncoder
+from datetime import datetime
 
 class LastFMPreprocessor:
     def __init__(self):
         self.user_encoder = LabelEncoder()
         self.artist_encoder = LabelEncoder()
         
+    def _process_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Обработка временных признаков"""
+        if 'signup' in df.columns:
+            # Преобразуем строковую дату в timestamp
+            df['signup'] = pd.to_datetime(df['signup']).astype('int64') // 10**9
+        return df
+    
+    def _process_demographic_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Обработка демографических признаков"""
+        # Обработка пола
+        if 'gender' in df.columns:
+            df['gender'] = df['gender'].map({'m': 'male', 'f': 'female'}).fillna('unknown')
+            
+        # Обработка возраста
+        if 'age' in df.columns:
+            df['age'] = pd.to_numeric(df['age'], errors='coerce')
+            df['age'] = df['age'].fillna(df['age'].mean())
+            
+        return df
+        
     def preprocess(self, 
                   df: pd.DataFrame, 
-                  feature_config: Dict[str, List[str]],
+                  feature_config: Dict,
                   min_interactions: int = 5) -> pd.DataFrame:
         """
         Предобработка данных LastFM
@@ -18,9 +39,8 @@ class LastFMPreprocessor:
         Args:
             df: Исходный датафрейм
             feature_config: Конфигурация используемых признаков
-            min_interactions: Минимальное количество взаимодействий для пользователя/артиста
+            min_interactions: Минимальное количество взаимодействий
         """
-        # Копируем датафрейм
         df = df.copy()
         
         # Фильтруем пользователей и артистов с малым количеством взаимодействий
@@ -32,17 +52,32 @@ class LastFMPreprocessor:
         
         df = df[df['user_id'].isin(valid_users) & df['artist_id'].isin(valid_artists)]
         
-        # Кодируем ID
+        # Обработка ID
         df['user_id'] = self.user_encoder.fit_transform(df['user_id'])
         df['artist_id'] = self.artist_encoder.fit_transform(df['artist_id'])
         
-        # Преобразуем дату в timestamp
-        if 'signup' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['signup']).astype('int64') // 10**9
-            
-        # Оставляем только нужные признаки
-        all_features = []
-        for feature_list in feature_config['features'].values():
-            all_features.extend(feature_list)
+        # Обработка временных признаков
+        df = self._process_temporal_features(df)
         
-        return df[list(set(all_features))] 
+        # Обработка демографических признаков
+        df = self._process_demographic_features(df)
+        
+        # Обработка категориальных признаков
+        categorical_features = feature_config['features'].get('categorical_features', [])
+        for feature in categorical_features:
+            if feature in df.columns:
+                df[feature] = df[feature].fillna('unknown')
+                
+        # Обработка числовых признаков
+        numerical_features = feature_config['features'].get('numerical_features', [])
+        for feature in numerical_features:
+            if feature in df.columns:
+                df[feature] = df[feature].fillna(df[feature].mean())
+        
+        # Получаем все необходимые признаки из конфига
+        all_features = set()
+        for feature_type in ['interaction_features', 'user_features', 'item_features']:
+            all_features.update(feature_config['features'].get(feature_type, []))
+            
+        # Оставляем только нужные колонки
+        return df[list(all_features)] 
