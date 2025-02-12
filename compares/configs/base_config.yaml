@@ -14,8 +14,8 @@ data:
 # Параметры обучения
 train_args:
   epochs: 10
-  train_batch_size: 16384
-  eval_batch_size: 16384
+  train_batch_size: 2048
+  eval_batch_size: 2048
   valid_metric: MRR@10
   eval_args:
     split: {'RS': [0.8, 0.1, 0.1]}
@@ -39,8 +39,8 @@ neg_sampling: ~
 
 # Параметры для обучения
 learning_rate: 0.001
-train_batch_size: 16384
-eval_batch_size: 16384
+train_batch_size: 2048
+eval_batch_size: 2048
 stopping_step: 10
 loss_type: 'CE'
 
