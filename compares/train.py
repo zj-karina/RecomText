@@ -9,18 +9,14 @@ from typing import Optional, Dict, List
 from recbole.quick_start import run_recbole
 from recbole.utils import init_seed
 from data.preprocessing.feature_preprocessor import FeaturePreprocessor, get_full_features_config
+from data.preprocessing.rutube_preprocessor import RutubePreprocessor
+from data.preprocessing.lastfm_preprocessor import LastFMPreprocessor
+from utils.logger import setup_logging
 
-def setup_logging(log_file: str = 'training.log') -> logging.Logger:
-    """Настраивает логирование"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
-    )
-    return logging.getLogger(__name__)
+DATASET_PREPROCESSORS = {
+    'rutube': RutubePreprocessor,
+    'lastfm': LastFMPreprocessor
+}
 
 def generate_config(
     features: Dict,
@@ -69,6 +65,7 @@ def run_experiment(
     experiment_name: str,
     model_params: Dict,
     feature_config: str,
+    dataset_type: str,
     output_dir: str = 'dataset'
 ):
     """Основная функция для запуска обучения и оценки."""
@@ -78,51 +75,99 @@ def run_experiment(
         # Загружаем данные
         df = pd.read_csv(input_file)
         
+        # Получаем препроцессор для конкретного датасета
+        dataset_preprocessor = DATASET_PREPROCESSORS.get(dataset_type)
+        if dataset_preprocessor is None:
+            raise ValueError(f"Unknown dataset type: {dataset_type}")
+        
+        # Инициализируем препроцессор датасета
+        preprocessor = dataset_preprocessor()
+        
         if feature_config in ['text_and_id', 'full_features']:
-            # Инициализируем препроцессор
-            preprocessor = FeaturePreprocessor()
+            # Загружаем конфигурацию признаков
+            with open(f'configs/feature_configs/{feature_config}.yaml', 'r') as f:
+                feature_config_dict = yaml.safe_load(f)
             
-            # Обрабатываем признаки элементов (items)
-            items_df = df[['item_id', 'title', 'description']].drop_duplicates()
-            preprocessor.process_features(
-                items_df,
-                output_dir,
-                experiment_name,
-                'item'
-            )
+            # Предобработка данных с учетом специфики датасета
+            df = preprocessor.preprocess(df, feature_config_dict)
             
-            if feature_config == 'full_features':
-                # Обрабатываем пользовательские признаки
-                users_df = df[['user_id', 'age', 'sex', 'region']].drop_duplicates()
-                preprocessor.process_features(
-                    users_df,
+            # Инициализируем препроцессор для фичей
+            feature_preprocessor = FeaturePreprocessor()
+            
+            # Обрабатываем признаки в зависимости от типа датасета
+            if dataset_type == 'rutube':
+                # Обработка признаков для Rutube
+                items_df = df[['item_id', 'title', 'description']].drop_duplicates()
+                feature_preprocessor.process_features(
+                    items_df,
                     output_dir,
                     experiment_name,
-                    'user'
+                    'item'
                 )
+                
+                if feature_config == 'full_features':
+                    users_df = df[['user_id', 'age', 'sex', 'region']].drop_duplicates()
+                    feature_preprocessor.process_features(
+                        users_df,
+                        output_dir,
+                        experiment_name,
+                        'user'
+                    )
+                
+                interactions_df = df[['user_id', 'item_id', 'timestamp', 'watch_time', 
+                                    'ua_device_type', 'ua_os']].copy()
+                
+            elif dataset_type == 'lastfm':
+                # Обработка признаков для LastFM
+                items_df = df[['artist_id', 'artist_name', 'tags']].drop_duplicates()
+                items_df = items_df.rename(columns={
+                    'artist_id': 'item_id',
+                    'artist_name': 'title',
+                    'tags': 'description'
+                })
+                feature_preprocessor.process_features(
+                    items_df,
+                    output_dir,
+                    experiment_name,
+                    'item'
+                )
+                
+                if feature_config == 'full_features':
+                    users_df = df[['user_id', 'age', 'gender', 'country']].drop_duplicates()
+                    users_df = users_df.rename(columns={
+                        'gender': 'sex',
+                        'country': 'region'
+                    })
+                    feature_preprocessor.process_features(
+                        users_df,
+                        output_dir,
+                        experiment_name,
+                        'user'
+                    )
+                
+                interactions_df = df[['user_id', 'artist_id', 'timestamp', 'play_count']].copy()
+                interactions_df = interactions_df.rename(columns={
+                    'artist_id': 'item_id',
+                    'play_count': 'watch_time'
+                })
             
-            # Получаем конфигурацию признаков
-            features = get_full_features_config()
-            
-            # Обрабатываем признаки взаимодействий
-            interactions_df = df[['user_id', 'item_id', 'timestamp', 'watch_time', 
-                                'ua_device_type', 'ua_os']].copy()
-            preprocessor.process_features(
+            feature_preprocessor.process_features(
                 interactions_df,
                 output_dir,
                 experiment_name,
                 'inter'
             )
+            
+            features = get_full_features_config()
+            
         else:
             # Используем базовую конфигурацию только с ID
             with open(f'configs/feature_configs/{feature_config}.yaml', 'r') as f:
                 features = yaml.safe_load(f)['features']
                 
-            # Базовая предобработка данных
-            for col in ['user_id', 'item_id']:
-                if col in df.columns:
-                    df[col] = pd.factorize(df[col])[0]
-                    
+            # Базовая предобработка данных через специфичный препроцессор
+            df = preprocessor.preprocess(df, features)
+            
             # Сохраняем взаимодействия
             if features.get('interaction_features'):
                 inter_df = df[features['interaction_features']].copy()
@@ -171,6 +216,9 @@ if __name__ == "__main__":
                       help='Feature configuration to use')
     parser.add_argument('--input_file', type=str, required=True,
                       help='Path to input data file')
+    parser.add_argument('--dataset_type', type=str, required=True,
+                      choices=['rutube', 'lastfm'],
+                      help='Type of dataset')
     parser.add_argument('--output_dir', type=str, default='./dataset',
                       help='Output directory')
     parser.add_argument('--experiment_name', type=str, required=True,
@@ -189,5 +237,6 @@ if __name__ == "__main__":
         experiment_name=args.experiment_name,
         model_params=model_params,
         feature_config=args.feature_config,
+        dataset_type=args.dataset_type,
         output_dir=args.output_dir
     ) 
