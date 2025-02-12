@@ -91,6 +91,13 @@ class RutubePreprocessor:
         # Обработка социально-демографических признаков
         df = self._process_demographic_features(df)
         
+        # Получаем все необходимые признаки из конфига
+        all_features = set()
+        for feature_type in ['interaction_features', 'user_features', 'item_features']:
+            features = feature_config['features'].get(feature_type, [])
+            # Добавляем только те признаки, которые есть в датафрейме
+            all_features.update([f for f in features if f in df.columns])
+        
         # Обработка текстовых и других признаков через FeaturePreprocessor
         feature_processor = FeaturePreprocessor()
         df = feature_processor.process_features(
@@ -106,29 +113,22 @@ class RutubePreprocessor:
         for feature in categorical_features:
             if feature in df.columns:
                 df[feature] = df[feature].fillna('unknown')
-                
+        
         # Обработка числовых признаков
         numerical_features = feature_config['features'].get('numerical_features', [])
         for feature in numerical_features:
             if feature in df.columns:
                 df[feature] = df[feature].fillna(df[feature].mean())
         
-        # Получаем все необходимые признаки из конфига
-        all_features = set()
-        for feature_type in ['interaction_features', 'user_features', 'item_features']:
-            all_features.update(feature_config['features'].get(feature_type, []))
-            
         # Добавляем эмбеддинги текстовых полей
         text_fields = feature_config['field_mapping'].get('TEXT_FIELDS', [])
         for field in text_fields:
-            emb_features = [f'{field}_emb_{i}' for i in range(384)]  # Размерность BERT
+            emb_features = [f'{field}_emb_{i}' for i in range(384)]
             all_features.update(emb_features)
-            
-        # Добавляем дополнительные признаки, если они нужны
-        if 'hour_sin' in numerical_features or 'hour_cos' in numerical_features:
-            all_features.update(['hour_sin', 'hour_cos'])
-        if 'is_weekend' in categorical_features:
-            all_features.add('is_weekend')
-            
-        # Оставляем только нужные колонки
-        return df[list(all_features)] 
+        
+        # Обновляем список признаков после всех преобразований
+        available_features = [f for f in all_features if f in df.columns]
+        
+        self.logger.info(f"Available features after processing: {available_features}")
+        
+        return df[available_features] 
