@@ -4,6 +4,7 @@ import numpy as np
 from typing import List, Dict, Optional
 import os
 from sklearn.preprocessing import LabelEncoder, StandardScaler
+import logging
 
 class FeaturePreprocessor:
     def __init__(
@@ -16,6 +17,7 @@ class FeaturePreprocessor:
         self.text_embedding_size = self.text_model.get_sentence_embedding_dimension()
         self.label_encoders = {}
         self.scalers = {}
+        self.logger = logging.getLogger(__name__)
         
     def _process_text_features(self, df: pd.DataFrame, text_fields: List[str]) -> pd.DataFrame:
         """Обработка текстовых признаков"""
@@ -23,21 +25,29 @@ class FeaturePreprocessor:
         
         for field in text_fields:
             if field in df.columns:
-                embeddings = df[field].apply(
-                    lambda x: self.text_model.encode(str(x)) if pd.notna(x) 
-                    else np.zeros(self.text_embedding_size)
+                self.logger.info(f"Processing text field: {field}")
+                # Батчевая обработка для оптимизации
+                texts = df[field].fillna('').tolist()
+                embeddings = self.text_model.encode(
+                    texts,
+                    batch_size=32,
+                    show_progress_bar=True
                 )
                 
+                # Создаем колонки для эмбеддингов
                 emb_columns = [f'{field}_emb_{i}' for i in range(self.text_embedding_size)]
                 df_processed = df_processed.join(
                     pd.DataFrame(
-                        embeddings.tolist(),
+                        embeddings,
                         columns=emb_columns,
                         index=df_processed.index
                     )
                 )
+                # Удаляем исходное текстовое поле
                 df_processed = df_processed.drop(columns=[field])
                 
+                self.logger.info(f"Created {len(emb_columns)} embedding features for {field}")
+        
         return df_processed
     
     def _process_categorical_features(

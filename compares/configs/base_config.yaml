@@ -5,38 +5,50 @@ data:
   USER_ID_FIELD: user_id
   ITEM_ID_FIELD: item_id
   TIME_FIELD: timestamp
-  RATING_FIELD: watch_time
-  NEG_PREFIX: neg_
+  RATING_FIELD: rating
   load_col:
-    inter: []  # Будет заполнено из feature_config
-    item: []   # Будет заполнено из feature_config
-    user: []   # Будет заполнено из feature_config
-  numerical_features: []  # Будет заполнено из feature_config
-  save_dataset: true
-
+    inter: [user_id, item_id, rating, timestamp]
+  
+  # Убираем определение типов полей, так как они уже определены в заголовках файлов
+  
 # Параметры обучения
-training:
-  seed: 42
-  epochs: 20
-  train_batch_size: 1024
-  eval_batch_size: 1024
-  learning_rate: 0.001
-  weight_decay: 0.01
-  warmup_ratio: 0.1
-  train_neg_sample_args: null
-
-# Параметры оценки
-evaluation:
-  metrics: ["Recall", "MRR", "NDCG", "Precision"]
-  topk: [5, 10, 20]
-  valid_metric: "MRR@10"
+train_args:
+  epochs: 300
+  train_batch_size: 256
+  eval_batch_size: 256
+  valid_metric: MRR@10
   eval_args:
-    split: {"LS": "valid_and_test"}
-    order: "TO"
-    group_by: "user"
-    mode: "full"
-  eval_step: 5
-  stopping_step: 10
+    split: {'RS': [0.8, 0.1, 0.1]}
+    order: RO
+    group_by: user
+    mode: full
+    
+# Параметры оценки
+eval_args:
+  metrics: ["Recall", "MRR", "NDCG", "Hit", "Precision"]
+  topk: [5, 10, 20]
+  
+# Параметры оптимизации
+optimizer_args:
+  lr: 0.001
+  weight_decay: 0.0
+
+# Параметры для последовательных моделей
+train_neg_sample_args: ~
+neg_sampling: ~
+
+# Параметры для обучения
+learning_rate: 0.001
+train_batch_size: 256
+eval_batch_size: 256
+stopping_step: 10
+loss_type: 'CE'
+
+# Параметры для оптимизации памяти
+memory:
+  buffer_size: 10000
+  pin_memory: true
+  prefetch_factor: 2
 
 # Параметры логирования
 logging:
@@ -46,37 +58,3 @@ logging:
   save_checkpoint: true
   checkpoint_dir: "saved"
   log_interval: 100
-
-# Параметры оборудования
-device:
-  gpu_id: 0
-  use_gpu: true
-  reproducibility: true
-  worker: 4
-
-# Параметры препроцессинга текста
-text:
-  model: "sentence-transformers/all-MiniLM-L6-v2"
-  max_length: 512
-  batch_size: 32
-
-# Параметры для категориальных признаков
-categorical:
-  embedding_dim: 16
-  min_freq: 1
-  
-# Параметры для числовых признаков
-numerical:
-  normalize: true
-  fillna: 0
-
-# Параметры для последовательностей
-sequence:
-  max_seq_length: 50
-  mask_ratio: 0.2
-  
-# Параметры для оптимизации памяти
-memory:
-  buffer_size: 10000
-  pin_memory: true
-  prefetch_factor: 2 

@@ -26,6 +26,37 @@ class RutubePreprocessor:
             
         return df
     
+    def _process_demographic_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Обработка социально-демографических признаков"""
+        df = df.copy()
+        
+        # Обработка пола
+        if 'sex' in df.columns:
+            df['sex'] = df['sex'].fillna('unknown')
+            df['sex'] = df['sex'].map({
+                'M': 'male',
+                'F': 'female',
+                'm': 'male',
+                'f': 'female'
+            }).fillna('unknown')
+        
+        # Обработка возраста
+        if 'age' in df.columns:
+            df['age'] = pd.to_numeric(df['age'], errors='coerce')
+            median_age = df['age'].median()
+            df['age'] = df['age'].fillna(median_age)
+            # Ограничиваем возраст разумными пределами
+            df.loc[df['age'] < 13, 'age'] = 13
+            df.loc[df['age'] > 90, 'age'] = 90
+            # Нормализация
+            df['age'] = (df['age'] - df['age'].mean()) / df['age'].std()
+        
+        # Обработка региона
+        if 'region' in df.columns:
+            df['region'] = df['region'].fillna('unknown')
+        
+        return df
+    
     def preprocess(self, 
                   df: pd.DataFrame, 
                   feature_config: Dict,
@@ -55,6 +86,9 @@ class RutubePreprocessor:
         
         # Обработка временных признаков
         df = self._process_temporal_features(df)
+        
+        # Обработка социально-демографических признаков
+        df = self._process_demographic_features(df)
         
         # Обработка категориальных признаков
         categorical_features = feature_config['features'].get('categorical_features', [])

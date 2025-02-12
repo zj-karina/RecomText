@@ -51,6 +51,19 @@ def generate_config(
     # Добавляем маппинг полей
     config['data'].update(dataset_features['field_mapping'])
     
+    # Проверяем наличие текстовых полей
+    if 'TEXT_FIELDS' in dataset_features['field_mapping']:
+        text_fields = dataset_features['field_mapping']['TEXT_FIELDS']
+        # Добавляем эмбеддинги в numerical_features
+        for field in text_fields:
+            emb_features = [f'{field}_emb_{i}' for i in range(384)]  # Размерность BERT
+            config['data']['numerical_features'].extend(emb_features)
+    
+    # Проверяем наличие категориальных признаков
+    if 'categorical_features' in dataset_features['features']:
+        cat_fields = dataset_features['features']['categorical_features']
+        config['data']['token_features'] = cat_fields
+    
     # Добавляем параметры модели
     config.update(model_params)
     
@@ -90,118 +103,73 @@ def run_experiment(
         if dataset_type == 'rutube':
             df['rutube_video_id'] = df['rutube_video_id'].apply(lambda x: x.strip('video_'))
         
-        # Инициализируем препроцессор датасета
-        preprocessor = dataset_preprocessor()
-        
         # Загружаем конфигурацию признаков
         with open(f'configs/feature_configs/{feature_config}.yaml', 'r') as f:
             feature_config_dict = yaml.safe_load(f)
         
-        if feature_config in ['text_and_id', 'full_features']:
-            # Предобработка данных с учетом специфики датасета
-            df = preprocessor.preprocess(df, feature_config_dict[dataset_type])
+        # Инициализируем препроцессор датасета
+        preprocessor = dataset_preprocessor()
+        
+        # Предобработка данных
+        df = preprocessor.preprocess(df, feature_config_dict[dataset_type])
+        
+        # Сохраняем взаимодействия с явным указанием типов
+        if dataset_type == 'rutube':
+            inter_df = df[['viewer_uid', 'rutube_video_id', 'timestamp', 'total_watchtime']].copy()
+            inter_df = inter_df.rename(columns={
+                'viewer_uid': 'user_id',
+                'rutube_video_id': 'item_id',
+                'total_watchtime': 'rating'
+            })
+        else:  # lastfm
+            inter_df = df[['user_id', 'artist_id', 'timestamp', 'plays']].copy()
+            inter_df = inter_df.rename(columns={
+                'artist_id': 'item_id',
+                'plays': 'rating'
+            })
+        
+        # Убеждаемся, что timestamp присутствует и отсортирован
+        if 'timestamp' not in inter_df.columns:
+            raise ValueError("timestamp field is required for sequential recommendation")
             
-            # Инициализируем препроцессор для фичей
-            feature_preprocessor = FeaturePreprocessor()
-            
-            # Обрабатываем признаки в зависимости от типа датасета
-            if dataset_type == 'rutube':
-                # Обработка признаков для Rutube
-                items_df = df[['rutube_video_id', 'title', 'category']].drop_duplicates()
-                items_df = items_df.rename(columns={'rutube_video_id': 'item_id'})
-                feature_preprocessor.process_features(
-                    items_df,
-                    feature_config_dict,
-                    output_dir,
-                    experiment_name,
-                    dataset_type,
-                    'item'
-                )
-                
-                if feature_config == 'full_features':
-                    users_df = df[['viewer_uid', 'age', 'sex', 'region']].drop_duplicates()
-                    users_df = users_df.rename(columns={'viewer_uid': 'user_id'})
-                    feature_preprocessor.process_features(
-                        users_df,
-                        feature_config_dict,
-                        output_dir,
-                        experiment_name,
-                        dataset_type,
-                        'user'
-                    )
-                
-                interactions_df = df[['viewer_uid', 'rutube_video_id', 'timestamp', 'total_watchtime', 
-                                    'ua_device_type', 'ua_os']].copy()
-                interactions_df = interactions_df.rename(columns={
-                    'viewer_uid': 'user_id',
-                    'rutube_video_id': 'item_id',
-                    'total_watchtime': 'rating'
-                })
-                
-            elif dataset_type == 'lastfm':
-                # Обработка признаков для LastFM
-                items_df = df[['artist_id', 'artist_name']].drop_duplicates()
-                items_df = items_df.rename(columns={'artist_id': 'item_id'})
-                feature_preprocessor.process_features(
-                    items_df,
-                    feature_config_dict,
-                    output_dir,
-                    experiment_name,
-                    dataset_type,
-                    'item'
-                )
-                
-                if feature_config == 'full_features':
-                    users_df = df[['user_id', 'age', 'gender', 'country']].drop_duplicates()
-                    feature_preprocessor.process_features(
-                        users_df,
-                        feature_config_dict,
-                        output_dir,
-                        experiment_name,
-                        dataset_type,
-                        'user'
-                    )
-                
-                interactions_df = df[['user_id', 'artist_id', 'timestamp', 'plays']].copy()
-                interactions_df = interactions_df.rename(columns={
-                    'artist_id': 'item_id',
-                    'plays': 'rating'
-                })
-            
-            feature_preprocessor.process_features(
-                interactions_df,
-                feature_config_dict,
-                output_dir,
-                experiment_name,
-                dataset_type,
-                'inter'
-            )
-            
-        else:
-            # Базовая предобработка данных через специфичный препроцессор
-            df = preprocessor.preprocess(df, feature_config_dict[dataset_type])
-            
-            # Сохраняем взаимодействия
-            if dataset_type == 'rutube':
-                inter_df = df[['viewer_uid', 'rutube_video_id', 'timestamp', 'total_watchtime']].copy()
-                inter_df = inter_df.rename(columns={
-                    'viewer_uid': 'user_id',
-                    'rutube_video_id': 'item_id',
-                    'total_watchtime': 'rating'
-                })
-            else:  # lastfm
-                inter_df = df[['user_id', 'artist_id', 'timestamp', 'plays']].copy()
-                inter_df = inter_df.rename(columns={
-                    'artist_id': 'item_id',
-                    'plays': 'rating'
-                })
-                
-            os.makedirs(f"{output_dir}/{experiment_name}", exist_ok=True)
-            inter_df.to_csv(
-                f'{output_dir}/{experiment_name}/{experiment_name}.inter',
-                sep='\t',
-                index=False
-            )
+        # Сортируем по времени
+        inter_df = inter_df.sort_values('timestamp')
+        
+        # Создаем директорию для эксперимента
+        os.makedirs(f"{output_dir}/{experiment_name}", exist_ok=True)
+        
+        # Записываем файл с заголовками, содержащими типы
+        with open(f'{output_dir}/{experiment_name}/{experiment_name}.inter', 'w', encoding='utf-8') as f:
+            # Определяем типы для каждого поля
+            header_types = [
+                'user_id:token',
+                'item_id:token',
+                'rating:float',
+                'timestamp:float'  # Убеждаемся, что timestamp включен
+            ]
+            # Записываем заголовок и данные
+            f.write('\t'.join(header_types) + '\n')
+            inter_df.to_csv(f, sep='\t', index=False, header=False)
+
+        # Обновляем конфигурацию
+        config_dict = {
+            'data_path': output_dir,
+            'checkpoint_dir': f'./ckpts/saved_{experiment_name}',
+            'save_dataset': True,
+            'load_col': {
+                'inter': ['user_id', 'item_id', 'rating', 'timestamp']  # Явно указываем все необходимые поля
+            },
+            'eval_args': {
+                'split': {'RS': [0.8, 0.1, 0.1]},
+                'order': 'TO',
+                'group_by': 'user',
+                'mode': 'full'
+            },
+            'MAX_ITEM_LIST_LENGTH': 50,
+            'ITEM_LIST_LENGTH_FIELD': 'item_length',
+            'LIST_SUFFIX': '_list',
+            'max_seq_length': 50
+        }
 
         # Генерируем конфиг и запускаем обучение
         config_path = generate_config(
@@ -217,11 +185,7 @@ def run_experiment(
             model=model_params['model'],
             dataset=experiment_name,
             config_file_list=[config_path],
-            config_dict={
-                'data_path': output_dir,
-                'checkpoint_dir': f'./ckpts/saved_{experiment_name}',
-                'save_dataset': True
-            }
+            config_dict=config_dict
         )
         
         logger.info(f"Training completed. Model saved in ./ckpts/saved_{experiment_name}")
