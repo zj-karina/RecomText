@@ -22,7 +22,8 @@ def generate_config(
     features: Dict,
     model_params: Dict,
     output_dir: str,
-    experiment_name: str
+    experiment_name: str,
+    dataset_type: str
 ) -> str:
     """Generate and save RecBole configuration"""
     # Загружаем базовый конфиг
@@ -34,15 +35,21 @@ def generate_config(
     with open(base_config_path, 'r') as f:
         config = yaml.safe_load(f)
     
+    # Получаем конфигурацию для конкретного датасета
+    dataset_features = features[dataset_type]
+    
     # Обновляем load_col из features
     config['data']['load_col'] = {
-        'inter': features['interaction_features'],
-        'item': features.get('item_features', []),
-        'user': features.get('user_features', [])
+        'inter': dataset_features['features']['interaction_features'],
+        'item': dataset_features['features'].get('item_features', []),
+        'user': dataset_features['features'].get('user_features', [])
     }
     
     # Обновляем numerical_features
-    config['data']['numerical_features'] = features['numerical_features']
+    config['data']['numerical_features'] = dataset_features['features']['numerical_features']
+    
+    # Добавляем маппинг полей
+    config['data'].update(dataset_features['field_mapping'])
     
     # Добавляем параметры модели
     config.update(model_params)
@@ -80,6 +87,16 @@ def run_experiment(
         if dataset_preprocessor is None:
             raise ValueError(f"Unknown dataset type: {dataset_type}")
         
+        if dataset_type == 'rutube':
+            column_mapping = {
+                    'viewer_uid': 'user_id',
+                    'rutube_video_id': 'item_id',
+                    'total_watchtime': 'watch_time'
+                }
+                
+            df = df.rename(columns=column_mapping)
+            df['item_id'] = df['item_id'].apply(lambda x: x.strip('video_'))
+        
         # Инициализируем препроцессор датасета
         preprocessor = dataset_preprocessor()
         
@@ -89,7 +106,7 @@ def run_experiment(
                 feature_config_dict = yaml.safe_load(f)
             
             # Предобработка данных с учетом специфики датасета
-            df = preprocessor.preprocess(df, feature_config_dict)
+            df = preprocessor.preprocess(df, feature_config_dict[dataset_type])
             
             # Инициализируем препроцессор для фичей
             feature_preprocessor = FeaturePreprocessor()
@@ -180,10 +197,11 @@ def run_experiment(
 
         # Генерируем конфиг и запускаем обучение
         config_path = generate_config(
-            features=features,
+            features=feature_config_dict,
             model_params=model_params,
             output_dir=output_dir,
-            experiment_name=experiment_name
+            experiment_name=experiment_name,
+            dataset_type=dataset_type
         )
         
         init_seed(42, True)

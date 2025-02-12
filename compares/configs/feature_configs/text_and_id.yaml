@@ -1,15 +1,51 @@
-features:
-  interaction_features: ["user_id", "item_id", "timestamp", "watch_time"]
-  user_features: ["user_id"]
-  item_features: ["item_id"]
-  numerical_features: ["timestamp", "watch_time"]
-  text_embeddings:
-    title_embedding_size: 384
-    description_embedding_size: 384
-    model: "sentence-transformers/all-MiniLM-L6-v2"
+rutube:
+  features:
+    interaction_features: [
+      "viewer_uid",
+      "rutube_video_id",
+      "total_watchtime",
+      "timestamp"
+    ]
+    user_features: [
+      "viewer_uid"
+    ]
+    item_features: [
+      "rutube_video_id",
+      "title",
+      "category"
+    ]
+    numerical_features: [
+      "total_watchtime",
+      "timestamp"
+    ]
 
-field_mapping:
-  USER_ID_FIELD: "user_id"
-  ITEM_ID_FIELD: "item_id"
-  TIME_FIELD: "timestamp"
-  RATING_FIELD: "watch_time" 
+  field_mapping:
+    USER_ID_FIELD: "viewer_uid"
+    ITEM_ID_FIELD: "rutube_video_id"
+    RATING_FIELD: "total_watchtime"
+    TIME_FIELD: "timestamp"
+    TEXT_FIELDS: ["title", "category"]
+
+lastfm:
+  features:
+    interaction_features: [
+      "user_id",
+      "artist_id",
+      "plays",
+      "signup"
+    ]
+    user_features: [
+      "user_id"
+    ]
+    item_features: [
+      "artist_id",
+      "artist_name"
+    ]
+    numerical_features: ["plays"]
+
+  field_mapping:
+    USER_ID_FIELD: "user_id"
+    ITEM_ID_FIELD: "artist_id"
+    RATING_FIELD: "plays"
+    TIME_FIELD: "signup"
+    TEXT_FIELDS: ["artist_name"] 
