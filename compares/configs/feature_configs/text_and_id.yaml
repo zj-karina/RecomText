@@ -1,0 +1,15 @@
+features:
+  interaction_features: ["user_id", "item_id", "timestamp", "watch_time"]
+  user_features: ["user_id"]
+  item_features: ["item_id"]
+  numerical_features: ["timestamp", "watch_time"]
+  text_embeddings:
+    title_embedding_size: 384
+    description_embedding_size: 384
+    model: "sentence-transformers/all-MiniLM-L6-v2"
+
+field_mapping:
+  USER_ID_FIELD: "user_id"
+  ITEM_ID_FIELD: "item_id"
+  TIME_FIELD: "timestamp"
+  RATING_FIELD: "watch_time" 

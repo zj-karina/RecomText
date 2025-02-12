@@ -1,0 +1,13 @@
+features:
+  interaction_features: ["user_id", "item_id", "timestamp", "watch_time", "ua_device_type", "ua_os"]
+  user_features: ["user_id", "age", "sex", "region"]
+  item_features: ["item_id", "title", "description", "duration", "category"]
+  numerical_features: ["timestamp", "watch_time", "duration", "age"]
+
+field_mapping:
+  USER_ID_FIELD: "user_id"
+  ITEM_ID_FIELD: "item_id"
+  TIME_FIELD: "timestamp"
+  RATING_FIELD: "watch_time"
+  TEXT_FIELDS: ["title", "description"]
+  CATEGORICAL_FIELDS: ["ua_device_type", "ua_os", "sex", "region", "category"] 

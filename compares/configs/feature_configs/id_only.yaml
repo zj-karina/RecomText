@@ -1,0 +1,10 @@
+features:
+  interaction_features: ["user_id", "item_id", "timestamp"]
+  user_features: ["user_id"]
+  item_features: ["item_id"]
+  numerical_features: ["timestamp"]
+
+field_mapping:
+  USER_ID_FIELD: "user_id"
+  ITEM_ID_FIELD: "item_id"
+  TIME_FIELD: "timestamp" 
