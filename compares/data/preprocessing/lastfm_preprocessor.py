@@ -12,8 +12,14 @@ class LastFMPreprocessor:
     def _process_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Обработка временных признаков"""
         if 'signup' in df.columns:
-            # Преобразуем строковую дату в timestamp
-            df['signup'] = pd.to_datetime(df['signup']).astype('int64') // 10**9
+            # Преобразуем строковую дату в timestamp с учетом формата "MMM d, YYYY"
+            df['signup'] = pd.to_datetime(df['signup'], format='%b %d, %Y').astype('int64') // 10**9
+        
+        if 'timestamp' in df.columns:
+            # Убеждаемся, что timestamp в секундах
+            if df['timestamp'].max() > 1e12:  # если в миллисекундах
+                df['timestamp'] = df['timestamp'] // 1000
+        
         return df
     
     def _process_demographic_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -57,10 +63,28 @@ class LastFMPreprocessor:
         df['artist_id'] = self.artist_encoder.fit_transform(df['artist_id'])
         
         # Обработка временных признаков
-        df = self._process_temporal_features(df)
+        try:
+            df = self._process_temporal_features(df)
+        except Exception as e:
+            self.logger.warning(f"Error processing temporal features: {str(e)}. Skipping temporal features.")
+            if 'signup' in df.columns:
+                df = df.drop(columns=['signup'])
         
         # Обработка демографических признаков
-        df = self._process_demographic_features(df)
+        if any(field in df.columns for field in ['gender', 'age', 'country']):
+            df = self._process_demographic_features(df)
+        
+        # Обработка текстовых признаков через FeaturePreprocessor
+        text_fields = feature_config['field_mapping'].get('TEXT_FIELDS', [])
+        if text_fields:
+            feature_processor = FeaturePreprocessor()
+            df = feature_processor.process_features(
+                df=df,
+                feature_config=feature_config,
+                output_dir='dataset',  # временная директория
+                experiment_name='temp',
+                dataset_type='lastfm'
+            )
         
         # Обработка категориальных признаков
         categorical_features = feature_config['features'].get('categorical_features', [])
