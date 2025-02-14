@@ -8,53 +8,39 @@ data:
   RATING_FIELD: rating
   load_col:
     inter: [user_id, item_id, rating, timestamp]
-  
-  # Убираем определение типов полей, так как они уже определены в заголовках файлов
-  
-# Параметры обучения
-train_args:
-  epochs: 10
-  train_batch_size: 2048
-  eval_batch_size: 2048
-  valid_metric: MRR@10
-  eval_args:
-    split: {'RS': [0.8, 0.1, 0.1]}
-    order: RO
-    group_by: user
-    mode: full
-    
-# Параметры оценки
-eval_args:
-  metrics: ["Recall", "MRR", "NDCG", "Hit", "Precision"]
-  topk: [5, 10, 20]
-  
-# Параметры оптимизации
-optimizer_args:
-  lr: 0.001
-  weight_decay: 0.0
 
 # Параметры для последовательных моделей
 train_neg_sample_args: ~
 neg_sampling: ~
 
 # Параметры для обучения
+epochs: 2
 learning_rate: 0.001
 train_batch_size: 2048
 eval_batch_size: 2048
 stopping_step: 10
 loss_type: 'CE'
+weight_decay: 0.0
+
+# Параметры оценки
+metrics: ["Hit", "MRR", "NDCG", "Precision", "Recall"]
+valid_metric: NDCG@10
+topk: [5, 10, 20]
+eval_args:
+  split: {'RS': [0.8, 0.1, 0.1]}
+  order: RO
+  group_by: user
+  mode: full
 
 # Параметры для оптимизации памяти
-memory:
-  buffer_size: 10000
-  pin_memory: true
-  prefetch_factor: 2
+buffer_size: 10000
+pin_memory: true
+prefetch_factor: 2
 
 # Параметры логирования
-logging:
-  log_wandb: true
-  wandb_project: "recom_text_compares"
-  save_dataset: true
-  save_checkpoint: true
-  checkpoint_dir: "saved"
-  log_interval: 100
+log_wandb: true
+wandb_project: "recom_text_compares"
+save_dataset: true
+save_checkpoint: true
+checkpoint_dir: "saved1"
+log_interval: 100
