@@ -9,4 +9,4 @@ mask_ratio: 0.2
 hidden_act: gelu
 layer_norm_eps: 1e-12
 max_seq_length: 100
-learning_rate: 1e-5 
+learning_rate: 1e-5

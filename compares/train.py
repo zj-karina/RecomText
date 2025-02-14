@@ -2,9 +2,11 @@ import pandas as pd
 import numpy as np
 import os
 import logging
+import glob
 import math
 import yaml
 import torch
+from tqdm import tqdm
 from datetime import datetime
 from typing import Optional, Dict, List
 from recbole.quick_start import run_recbole
@@ -14,20 +16,12 @@ from data.preprocessing.rutube_preprocessor import RutubePreprocessor
 from data.preprocessing.lastfm_preprocessor import LastFMPreprocessor
 from utils.logger import setup_logging
 from sklearn.metrics.pairwise import cosine_similarity
-import pandas as pd
-import numpy as np
-import os
-import logging
-import torch
-from datetime import datetime
 from sklearn.preprocessing import LabelEncoder
 from recbole.quick_start import run_recbole, load_data_and_model
 from recbole.utils import init_seed
 from recbole.utils.case_study import full_sort_scores
 from typing import Optional, Dict, List
 from sklearn.metrics.pairwise import cosine_similarity
-import os
-import glob
 
 DATASET_PREPROCESSORS = {
     'rutube': RutubePreprocessor,
@@ -109,19 +103,19 @@ def generate_config(
 
 #     return user_embeddings, item_embeddings
 
-def contextual_ndcg(pred_items, ground_truth_items, item_embeddings, category_info, k=10):
+def contextual_ndcg(preprocessor, pred_items, ground_truth_items, item_embeddings, category_info, k=10):
     """
     Вычисляет Contextual NDCG с учетом семантической близости и категорий.
     """
     sim_threshold_ndcg = 0.8
     relevances = []
     for gt_item in ground_truth_items:
-        print(f"gt_item = {gt_item}")
-        print(f"type(gt_item) = {type(gt_item)}")
-        gt_category = category_info.get(gt_item, None)['category_id']
+        orig_gt_item = preprocessor.item_encoder.inverse_transform([gt_item])[0]
+        gt_category = category_info.get(str(orig_gt_item), None)['category_id']
         gt_vector = item_embeddings[gt_item]
         for rec_item in pred_items[:k]:
-            rec_category = category_info.get(rec_item, None)['category_id']
+            orig_rec_item = preprocessor.item_encoder.inverse_transform([rec_item])[0]
+            rec_category = category_info.get(str(orig_rec_item), None)['category_id']
             rec_vector = item_embeddings[rec_item]
             similarity = cosine_similarity([gt_vector], [rec_vector])[0][0]
             if rec_category == gt_category and similarity >= sim_threshold_ndcg:
@@ -153,60 +147,67 @@ def semantic_precision_at_k(pred_items, ground_truth_items, item_embeddings, k=1
                 successful_recs += 1
     return successful_recs / (k * len(ground_truth_items))
 
-def cross_category_relevance(pred_items, ground_truth_items, item_embeddings, category_info, k=10):
+def cross_category_relevance(preprocessor, pred_items, ground_truth_items, item_embeddings, category_info, k=10):
     """Оценивает качество рекомендаций с учетом категорий."""
     same_category_count = 0
     cross_category_success = 0
     for gt_item in ground_truth_items:
-        print(f"gt_item = {gt_item}")
-        gt_category = category_info.get(gt_item, None)['category_id']
+        orig_gt_item = preprocessor.item_encoder.inverse_transform([gt_item])[0]
+        gt_category = category_info.get(str(orig_gt_item), None)['category_id']
         gt_vector = item_embeddings[gt_item]
         for rec_item in pred_items[:k]:
-            rec_category = category_info.get(rec_item, None)['category_id']
+            orig_rec_item = preprocessor.item_encoder.inverse_transform([rec_item])[0]
+            rec_category = category_info.get(str(orig_rec_item), None)['category_id']
             rec_vector = item_embeddings[rec_item]
             similarity = cosine_similarity([gt_vector], [rec_vector])[0][0]
             if rec_category == gt_category:
                 same_category_count += 1
             elif similarity >= 0.7:
                 cross_category_success += 1
-    sp_k = semantic_precision_at_k(pred_items, ground_truth_items, k)
+    sp_k = semantic_precision_at_k(pred_items, ground_truth_items, item_embeddings, k)
     category_diversity = 1 - (same_category_count / k)
     return 0.7 * sp_k + 0.3 * category_diversity
 
-
-def evaluate_with_custom_metrics(config, config_dict, model, category_info, k=10):
-    """Запускает кастомные метрики."""
+def evaluate_with_custom_metrics(preprocessor, config_dict, category_info, k=10):
+    """Запускает кастомные метрики"""
     model_path = get_latest_checkpoint(config_dict['checkpoint_dir'])
     (config, model, dataset, train_data, valid_data, test_data) = load_data_and_model(model_path)
-    # user_embeddings, item_embeddings = extract_embeddings(model, config_path)
     model.eval()
-
-    user_embeddings = model.user_embedding.weight.detach().cpu().numpy()
+    
     item_embeddings = model.item_embedding.weight.detach().cpu().numpy()
-
-    scores_matrix = full_sort_scores(model, test_data, config)
 
     all_users = test_data.dataset.inter_feat['user_id'].numpy()
     all_items = test_data.dataset.inter_feat['item_id'].numpy()
-
-    print(f"item_embedding = {item_embeddings.shape}")
     unique_users = np.unique(all_users)
-    print(f"all_items = {all_items.shape}")
-    print(f"all_users = {all_users.shape}")
+    
+    batch_size = 100  # Можно подобрать
+    scores_list = []
+
+    # Обрабатываем по батчам, чтобы не падать с OOM
+    for i in tqdm(range(0, len(unique_users), batch_size), desc="Computing scores"):
+        batch_users = unique_users[i : i + batch_size]
+
+        with torch.no_grad():
+            batch_scores = full_sort_scores(batch_users, model, test_data, device=torch.device('cuda:0'))
+
+        scores_list.append(batch_scores.cpu())  # Переносим на CPU, чтобы разгрузить VRAM
+
+    scores_matrix = torch.cat(scores_list, dim=0).numpy()
+
+    # Метрики
     results = {'SP@K': 0, 'CCR': 0, 'NDCG': 0}
     num_users = len(unique_users)
 
-    print(f"num_users = {num_users}")
-    print(f"unique_users = {unique_users}")
-    print(f"all_items = {np.unique(all_items)}")
-    for user_id in unique_users:
-        user_indices = np.where(all_users == user_id)
+    for idx, user_id in tqdm(enumerate(unique_users), total=num_users, desc="Evaluating users"):
+        user_indices = np.where(all_users == user_id)[0]
         ground_truth_items = all_items[user_indices]
-        pred_items = scores_matrix[user_indices].argsort(axis=1)[:, -k:][0]
+
+        # Индексируем правильно: берём строку `idx` (а не `user_indices`)
+        pred_items = scores_matrix[idx].argsort()[-k:]  # Последние k элементов (лучшие)
 
         results['SP@K'] += semantic_precision_at_k(pred_items, ground_truth_items, item_embeddings)
-        results['CCR'] += cross_category_relevance(pred_items, ground_truth_items, category_info)
-        results['CCR'] += contextual_ndcg(pred_items, ground_truth_items, category_info)
+        results['CCR'] += cross_category_relevance(preprocessor, pred_items, ground_truth_items, item_embeddings, category_info)
+        results['NDCG'] += contextual_ndcg(preprocessor, pred_items, ground_truth_items, item_embeddings, category_info)
 
     for key in results:
         results[key] /= num_users
@@ -238,7 +239,6 @@ def run_experiment(
     try:
         # Загружаем данные
         df = pd.read_csv(input_file)
-        print(df.columns)
         # Получаем препроцессор для конкретного датасета
         dataset_preprocessor = DATASET_PREPROCESSORS.get(dataset_type)
         if dataset_preprocessor is None:
@@ -335,10 +335,9 @@ def run_experiment(
             config_file_list=[config_path],
             config_dict=config_dict
         )
-        print(result)
         # Запускаем кастомные метрики
         category_info = {}  # Подгрузи сюда реальные категории
-        custom_metrics = evaluate_with_custom_metrics(model_path, config_dict, category_info)
+        custom_metrics = evaluate_with_custom_metrics(preprocessor, config_dict, df_videos_map)
         logger.info(f"Custom Metrics: {custom_metrics}")
 
         logger.info(f"Training completed. Model saved in ./ckpts/saved_{experiment_name}")

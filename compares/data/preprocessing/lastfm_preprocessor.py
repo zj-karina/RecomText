@@ -42,7 +42,6 @@ class LastFMPreprocessor:
             min_interactions: Минимальное количество взаимодействий
         """
         df = df.copy()
-        
         # Фильтруем пользователей и артистов с малым количеством взаимодействий
         user_counts = df['user_id'].value_counts()
         artist_counts = df['artist_id'].value_counts()

@@ -14,7 +14,7 @@ train_neg_sample_args: ~
 neg_sampling: ~
 
 # Параметры для обучения
-epochs: 2
+epochs: 1
 learning_rate: 0.001
 train_batch_size: 2048
 eval_batch_size: 2048
@@ -42,5 +42,4 @@ log_wandb: true
 wandb_project: "recom_text_compares"
 save_dataset: true
 save_checkpoint: true
-checkpoint_dir: "saved1"
 log_interval: 100
