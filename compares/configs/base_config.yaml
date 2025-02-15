@@ -36,8 +36,8 @@ valid_metric: NDCG@10
 topk: [5, 10, 20]
 eval_args:
   split: {'RS': [0.8, 0.1, 0.1]}
-  order: RO
-  group_by: user
+  order: 'TO'
+  group_by: 'user'
   mode: full
 
 # Параметры для оптимизации памяти

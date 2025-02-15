@@ -346,7 +346,7 @@ def run_experiment(
         )
         
         # Инициализируем конфигурацию
-        config = Config(model=model_class, config_dict=config)
+        config = Config(model=model_class, dataset=experiment_name, config_dict=config)
         init_seed(config['seed'], config['reproducibility'])
         
         # Инициализируем логгер

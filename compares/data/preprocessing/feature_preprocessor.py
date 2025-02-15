@@ -42,7 +42,7 @@ class FeaturePreprocessor:
                 # Используем device при генерации эмбеддингов
                 embeddings = self.text_model.encode(
                     texts,
-                    batch_size=32,
+                    batch_size=8192,
                     show_progress_bar=True,
                     device=self.device  # Явно указываем устройство
                 )
