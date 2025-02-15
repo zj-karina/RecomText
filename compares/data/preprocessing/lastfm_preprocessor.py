@@ -56,8 +56,8 @@ class LastFMPreprocessor:
         df['artist_id'] = self.artist_encoder.fit_transform(df['artist_id'])
         
         # Обработка временных признаков
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp']).astype('int64') // 10**9
+        if 'signup' in df.columns:
+            df['timestamp'] = pd.to_datetime(df['signup']).view('int64') // 10**9
         
         # Обработка социально-демографических признаков
         if 'gender' in df.columns:

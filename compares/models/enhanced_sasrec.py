@@ -44,12 +44,13 @@ class EnhancedSASRec(SASRec):
         """
         # Получаем базовые эмбеддинги последовательности от родительского класса
         seq_output = super().forward(item_seq, item_seq_len)
-        
+
         # Обработка числовых признаков, если они переданы в kwargs
         if self.num_numerical > 0 and all(feature in kwargs for feature in self.numerical_features):
             numerical_features = torch.stack(
                 [kwargs[feature] for feature in self.numerical_features], dim=-1
             )
+            print(numerical_features)
             numerical_emb = self.numerical_projection(numerical_features)
             seq_output = self.feature_fusion(torch.cat([seq_output, numerical_emb], dim=-1))
             
