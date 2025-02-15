@@ -9,52 +9,84 @@ class EnhancedSASRec(SASRec):
     def __init__(self, config, dataset):
         super().__init__(config, dataset)
         
-        # Получаем конфигурацию признаков
-        self.numerical_features = config['data'].get('numerical_features', [])
-        self.categorical_features = config['data'].get('token_features', [])
+        # Получаем размерности для текстовых эмбеддингов
+        self.text_fields = config['data']['TEXT_FIELDS']
+        self.text_embedding_dim = {}
+        for field_info in config['data']['field_preparation']['inter']:
+            if field_info['field'].endswith('_emb'):
+                self.text_embedding_dim[field_info['field']] = field_info['dim']
         
-        # Размерности для разных типов признаков
-        self.hidden_size = config['hidden_size']
-        self.num_numerical = len(self.numerical_features)
+        # Получаем информацию о пользовательских признаках
+        self.user_features = config['data']['USER_FEATURES']
+        self.user_feature_dims = {
+            field: dataset.field2token_num[field]
+            for field in self.user_features
+        }
         
-        # Создаем слои для обработки числовых признаков
-        if self.num_numerical > 0:
-            self.numerical_projection = nn.Sequential(
-                nn.Linear(self.num_numerical, self.hidden_size),
-                nn.ReLU(),
-                nn.Dropout(config['hidden_dropout_prob'])
-            )
-            
-        # Создаем эмбеддинги для категориальных признаков
-        if self.categorical_features:
-            self.categorical_embeddings = nn.ModuleDict({
-                feature: nn.Embedding(dataset.num_features[feature], self.hidden_size)
-                for feature in self.categorical_features
-            })
-            
+        # Создаем эмбеддинги для пользовательских признаков
+        self.user_feature_embeddings = nn.ModuleDict({
+            field: nn.Embedding(dim, self.hidden_size)
+            for field, dim in self.user_feature_dims.items()
+        })
+        
+        # Проекции для текстовых эмбеддингов
+        self.text_projections = nn.ModuleDict({
+            f"{field}_emb": nn.Linear(dim, self.hidden_size)
+            for field in self.text_fields
+            for emb_field, dim in self.text_embedding_dim.items()
+            if emb_field == f"{field}_emb"
+        })
+        
         # Слой для объединения всех признаков
-        self.feature_fusion = nn.Linear(self.hidden_size * 2, self.hidden_size)
-        
+        total_dims = self.hidden_size * (1 + len(self.text_fields) + len(self.user_features))
+        self.feature_fusion = nn.Sequential(
+            nn.Linear(total_dims, self.hidden_size),
+            nn.ReLU(),
+            nn.Linear(self.hidden_size, self.hidden_size)
+        )
+
     def forward(self, interaction):
+        # Получаем базовый выход от SASRec
         item_seq = interaction[self.ITEM_SEQ]
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
-        
-        # Получаем базовый выход от SASRec
         seq_output = super().forward(interaction)
         
-        # Добавляем обработку числовых признаков
-        if hasattr(self, 'numerical_features'):
-            numerical_tensors = []
-            for field in self.numerical_features:
-                field_list = f'{field}_list'
-                if field_list in interaction:
-                    numerical_tensors.append(interaction[field_list])
-            
-            if numerical_tensors:
-                numerical_features = torch.cat(numerical_tensors, dim=-1)
-                numerical_emb = self.numerical_projection(numerical_features)
-                seq_output = self.feature_fusion(
-                    torch.cat([seq_output, numerical_emb], dim=-1)
-                )
+        # Обрабатываем текстовые эмбеддинги
+        text_embeddings = []
+        for field in self.text_fields:
+            emb_field = f"{field}_emb"
+            if emb_field in self.text_projections:
+                # Собираем все компоненты эмбеддинга
+                emb_dim = self.text_embedding_dim[emb_field]
+                field_vectors = []
+                for i in range(emb_dim):
+                    field_name = f"{emb_field}_{i}_list"
+                    if field_name in interaction:
+                        field_vectors.append(interaction[field_name])
+                if field_vectors:
+                    # Объединяем компоненты и проецируем
+                    field_embedding = torch.stack(field_vectors, dim=-1)
+                    projected_embedding = self.text_projections[emb_field](field_embedding)
+                    text_embeddings.append(projected_embedding)
         
-        return seq_output
+        # Обрабатываем пользовательские признаки
+        user_embeddings = []
+        for field in self.user_features:
+            if field in interaction:
+                user_feature = interaction[field]
+                user_embedding = self.user_feature_embeddings[field](user_feature)
+                # Расширяем до размера последовательности
+                user_embedding = user_embedding.unsqueeze(1).expand(-1, seq_output.size(1), -1)
+                user_embeddings.append(user_embedding)
+        
+        # Объединяем все признаки
+        all_embeddings = [seq_output]
+        if text_embeddings:
+            all_embeddings.extend(text_embeddings)
+        if user_embeddings:
+            all_embeddings.extend(user_embeddings)
+        
+        combined_embedding = torch.cat(all_embeddings, dim=-1)
+        final_output = self.feature_fusion(combined_embedding)
+        
+        return final_output
