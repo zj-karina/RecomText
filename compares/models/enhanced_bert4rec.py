@@ -35,11 +35,14 @@ class EnhancedBERT4Rec(BERT4Rec):
         self.feature_fusion = nn.Linear(self.hidden_size * 2, self.hidden_size)
         
     def forward(self, interaction):
+        print(interaction)
+        print(self.ITEM_SEQ)
         item_seq = interaction[self.ITEM_SEQ]
-        item_seq_len = interaction[self.ITEM_SEQ_LEN]
+        item_seq = item_seq[:, 0, :]
+        # item_seq_len = interaction[self.ITEM_SEQ_LEN]
         
         # Получаем базовые эмбеддинги последовательности
-        seq_output = super().forward(item_seq, item_seq_len)
+        seq_output = super().forward(item_seq)
         
         # Обрабатываем числовые признаки
         if self.num_numerical > 0:

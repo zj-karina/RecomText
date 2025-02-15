@@ -265,7 +265,7 @@ def run_experiment(
         
         # Инициализируем препроцессор датасета
         preprocessor = dataset_preprocessor()
-        
+
         # Предобработка данных
         df = preprocessor.preprocess(df, feature_config_dict[dataset_type])
 
@@ -293,7 +293,7 @@ def run_experiment(
             
         # Сортируем по времени
         inter_df = inter_df.sort_values('timestamp')
-        
+
         # Создаем директорию для эксперимента
         os.makedirs(f"{output_dir}/{experiment_name}", exist_ok=True)
         
@@ -346,6 +346,7 @@ def run_experiment(
         )
         
         # Инициализируем конфигурацию
+        config.update(config_dict)
         config = Config(model=model_class, dataset=experiment_name, config_dict=config)
         init_seed(config['seed'], config['reproducibility'])
         

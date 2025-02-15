@@ -17,7 +17,7 @@ class EnhancedSASRec(SASRec):
         self.hidden_size = config['hidden_size']
         self.num_numerical = len(self.numerical_features)
         
-        # Создаем слои для обработки признаков
+        # Создаем слои для обработки числовых признаков
         if self.num_numerical > 0:
             self.numerical_projection = nn.Sequential(
                 nn.Linear(self.num_numerical, self.hidden_size),
@@ -25,6 +25,7 @@ class EnhancedSASRec(SASRec):
                 nn.Dropout(config['hidden_dropout_prob'])
             )
             
+        # Создаем эмбеддинги для категориальных признаков
         if self.categorical_features:
             self.categorical_embeddings = nn.ModuleDict({
                 feature: nn.Embedding(dataset.num_features[feature], self.hidden_size)
@@ -34,31 +35,30 @@ class EnhancedSASRec(SASRec):
         # Слой для объединения всех признаков
         self.feature_fusion = nn.Linear(self.hidden_size * 2, self.hidden_size)
         
-    def forward(self, interaction):
-        item_seq = interaction[self.ITEM_SEQ]
-        item_seq_len = interaction[self.ITEM_SEQ_LEN]
-        
-        # Получаем базовые эмбеддинги последовательности
+    def forward(self, item_seq, item_seq_len, **kwargs):
+        """
+        Аргументы:
+            item_seq: базовая последовательность (индексы), ожидаемая форма [batch_size, seq_len]
+            item_seq_len: длины последовательностей
+            **kwargs: дополнительные признаки (например, числовые или категориальные), передаваемые как именованные аргументы
+        """
+        # Получаем базовые эмбеддинги последовательности от родительского класса
         seq_output = super().forward(item_seq, item_seq_len)
         
-        # Обрабатываем числовые признаки
-        if self.num_numerical > 0:
-            numerical_features = torch.stack([
-                interaction[feature] for feature in self.numerical_features
-            ], dim=-1)
-            numerical_emb = self.numerical_projection(numerical_features)
-            seq_output = self.feature_fusion(
-                torch.cat([seq_output, numerical_emb], dim=-1)
+        # Обработка числовых признаков, если они переданы в kwargs
+        if self.num_numerical > 0 and all(feature in kwargs for feature in self.numerical_features):
+            numerical_features = torch.stack(
+                [kwargs[feature] for feature in self.numerical_features], dim=-1
             )
+            numerical_emb = self.numerical_projection(numerical_features)
+            seq_output = self.feature_fusion(torch.cat([seq_output, numerical_emb], dim=-1))
             
-        # Обрабатываем категориальные признаки
-        if self.categorical_features:
+        # Обработка категориальных признаков, если они переданы в kwargs
+        if self.categorical_features and all(feature in kwargs for feature in self.categorical_features):
             categorical_emb = torch.zeros_like(seq_output)
             for feature in self.categorical_features:
-                feature_emb = self.categorical_embeddings[feature](interaction[feature])
+                feature_emb = self.categorical_embeddings[feature](kwargs[feature])
                 categorical_emb = categorical_emb + feature_emb
-            seq_output = self.feature_fusion(
-                torch.cat([seq_output, categorical_emb], dim=-1)
-            )
+            seq_output = self.feature_fusion(torch.cat([seq_output, categorical_emb], dim=-1))
             
-        return seq_output 
+        return seq_output
