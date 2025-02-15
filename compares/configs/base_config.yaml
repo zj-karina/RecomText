@@ -8,6 +8,14 @@ data:
   RATING_FIELD: rating
   load_col:
     inter: [user_id, item_id, rating, timestamp]
+  
+  # Добавляем секцию для работы с признаками
+  feature_config:
+    use_numerical: true
+    use_categorical: true
+    numerical_features: []  # Будет заполнено из feature_config
+    token_features: []  # Будет заполнено из feature_config
+    text_fields: []  # Будет заполнено из feature_config
 
 # Параметры для последовательных моделей
 train_neg_sample_args: ~

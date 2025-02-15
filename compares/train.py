@@ -22,10 +22,17 @@ from recbole.utils import init_seed
 from recbole.utils.case_study import full_sort_scores
 from typing import Optional, Dict, List
 from sklearn.metrics.pairwise import cosine_similarity
+from models.enhanced_sasrec import EnhancedSASRec
+from models.enhanced_bert4rec import EnhancedBERT4Rec
 
 DATASET_PREPROCESSORS = {
     'rutube': RutubePreprocessor,
     'lastfm': LastFMPreprocessor
+}
+
+MODEL_MAPPING = {
+    'SASRec': EnhancedSASRec,
+    'BERT4Rec': EnhancedBERT4Rec
 }
 
 def generate_config(
@@ -55,32 +62,52 @@ def generate_config(
         'user': dataset_features['features'].get('user_features', [])
     }
     
-    # Обновляем numerical_features
-    config['data']['numerical_features'] = dataset_features['features']['numerical_features']
+    # Обновляем numerical_features и token_features
+    config['data']['numerical_features'] = dataset_features['features'].get('numerical_features', [])
+    config['data']['token_features'] = dataset_features['features'].get('categorical_features', [])
     
     # Добавляем маппинг полей
     config['data'].update(dataset_features['field_mapping'])
     
-    # Проверяем наличие текстовых полей
+    # Проверяем наличие текстовых полей и добавляем их эмбеддинги как numerical_features
     if 'TEXT_FIELDS' in dataset_features['field_mapping']:
         text_fields = dataset_features['field_mapping']['TEXT_FIELDS']
-        # Добавляем эмбеддинги в numerical_features
         for field in text_fields:
-            emb_features = [f'{field}_emb_{i}' for i in range(384)]  # Размерность BERT
+            emb_features = [f'{field}_emb_{i}' for i in range(384)]
             config['data']['numerical_features'].extend(emb_features)
+            # Добавляем эти поля в load_col для item
+            config['data']['load_col']['item'].extend(emb_features)
     
-    # Проверяем наличие категориальных признаков
-    if 'categorical_features' in dataset_features['features']:
-        cat_fields = dataset_features['features']['categorical_features']
-        config['data']['token_features'] = cat_fields
+    # Обновляем конфигурацию признаков
+    config['data']['feature_config'] = {
+        'use_numerical': bool(dataset_features['features'].get('numerical_features')),
+        'use_categorical': bool(dataset_features['features'].get('categorical_features')),
+        'numerical_features': dataset_features['features'].get('numerical_features', []),
+        'token_features': dataset_features['features'].get('categorical_features', []),
+        'text_fields': dataset_features['field_mapping'].get('TEXT_FIELDS', [])
+    }
     
-    # Добавляем параметры модели
+    # Добавляем параметры для работы с признаками из конфига модели
+    if 'feature_fusion' not in model_params:
+        model_params['feature_fusion'] = True
+    if 'numerical_projection_dropout' not in model_params:
+        model_params['numerical_projection_dropout'] = config.get('hidden_dropout_prob', 0.1)
+    if 'categorical_embedding_size' not in model_params:
+        model_params['categorical_embedding_size'] = config.get('hidden_size', 256)
+    
+    # Обновляем конфиг параметрами модели
     config.update(model_params)
     
     # Добавляем пути к данным и чекпоинтам
     config['data_path'] = output_dir
     config['checkpoint_dir'] = f'./ckpts/saved_{experiment_name}'
-
+    
+    # Добавляем параметры для sequential моделей
+    config['MAX_ITEM_LIST_LENGTH'] = 50
+    config['ITEM_LIST_LENGTH_FIELD'] = 'item_length'
+    config['LIST_SUFFIX'] = '_list'
+    config['max_seq_length'] = 50
+    
     # Сохраняем итоговый конфиг
     os.makedirs(f"{output_dir}/{experiment_name}", exist_ok=True)
     config_path = f'{output_dir}/{experiment_name}/{experiment_name}.yaml'
@@ -288,12 +315,32 @@ def run_experiment(
         # Записываем файл с заголовками, содержащими типы
         with open(f'{output_dir}/{experiment_name}/{experiment_name}.inter', 'w', encoding='utf-8') as f:
             # Определяем типы для каждого поля
-            header_types = [
+            header_types = []
+            
+            # Базовые поля
+            header_types.extend([
                 'user_id:token',
                 'item_id:token',
                 'rating:float',
-                'timestamp:float'  # Убеждаемся, что timestamp включен
-            ]
+                'timestamp:float'
+            ])
+            
+            # Добавляем числовые признаки
+            for field in feature_config_dict[dataset_type]['features'].get('numerical_features', []):
+                if field in inter_df.columns:
+                    header_types.append(f'{field}:float')
+                
+            # Добавляем категориальные признаки
+            for field in feature_config_dict[dataset_type]['features'].get('categorical_features', []):
+                if field in inter_df.columns:
+                    header_types.append(f'{field}:token')
+                
+            # Добавляем эмбеддинги текстовых полей
+            text_fields = feature_config_dict[dataset_type]['field_mapping'].get('TEXT_FIELDS', [])
+            for field in text_fields:
+                for i in range(384):
+                    header_types.append(f'{field}_emb_{i}:float')
+            
             # Записываем заголовок и данные
             f.write('\t'.join(header_types) + '\n')
             inter_df.to_csv(f, sep='\t', index=False, header=False)
@@ -328,9 +375,14 @@ def run_experiment(
             dataset_type=dataset_type
         )
 
+        # Получаем класс модели
+        model_class = MODEL_MAPPING.get(model_params['model'])
+        if model_class is None:
+            raise ValueError(f"Unknown model: {model_params['model']}")
+
         init_seed(42, True)
         result = run_recbole(
-            model=model_params['model'],
+            model=model_class,  # Передаем класс модели вместо названия
             dataset=experiment_name,
             config_file_list=[config_path],
             config_dict=config_dict
