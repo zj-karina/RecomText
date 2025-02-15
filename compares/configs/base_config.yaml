@@ -2,10 +2,60 @@
 data:
   field_separator: "\t"
   seq_separator: " "
-  USER_ID_FIELD: user_id
-  ITEM_ID_FIELD: item_id
+  USER_ID_FIELD: viewer_uid
+  ITEM_ID_FIELD: rutube_video_id
   TIME_FIELD: timestamp
-  RATING_FIELD: rating
+  RATING_FIELD: total_watchtime
+  
+  # Текстовые поля Rutube
+  TEXT_FIELDS: 
+    - title
+    - category
+  
+  # Категориальные поля пользователя
+  USER_FEATURES:
+    - age
+    - gender
+    - region
+  
+  # Параметры для последовательностей
+  LIST_SUFFIX: _list
+  MAX_ITEM_LIST_LENGTH: 50
+  ITEM_LIST_LENGTH_FIELD: item_length
+  
+  # Поля для дополнительных признаков
+  numerical_field_list: 
+    - title_emb
+    - category_emb
+  numerical_field_dims:
+    title_emb: 384
+    category_emb: 384
+    
+  # Параметры для подготовки данных
+  field_preparation:
+    inter:
+      # Текстовые эмбеддинги
+      - field: title_emb
+        type: float
+        source: item
+        list: True
+        dim: 384
+      - field: category_emb
+        type: float
+        source: item
+        list: True
+        dim: 384
+      
+      # Пользовательские категориальные признаки
+      - field: age
+        type: token
+        source: user
+      - field: gender
+        type: token
+        source: user
+      - field: region
+        type: token
+        source: user
   load_col:
     inter: [user_id, item_id, rating, timestamp]
   
