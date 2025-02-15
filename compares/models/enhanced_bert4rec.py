@@ -40,10 +40,12 @@ class EnhancedBERT4Rec(BERT4Rec):
             interaction: Словарь с полями взаимодействий
         """
         # Получаем последовательность элементов
-        item_seq = interaction[self.ITEM_SEQ]  # Используем константу ITEM_SEQ вместо прямого обращения
+        item_seq = interaction[self.ITEM_SEQ][:, 0, :] # Используем константу ITEM_SEQ вместо прямого обращения
+        item_seq_len = interaction[self.ITEM_SEQ_LEN]
+        item_seq = self.reconstruct_test_data(item_seq, item_seq_len)
         
         # Получаем базовые эмбеддинги последовательности от родительского класса
-        seq_output = super().forward(interaction)
+        seq_output = super().forward(item_seq)
         
         # Обрабатываем числовые признаки, используя маппинг полей
         if self.num_numerical > 0:
