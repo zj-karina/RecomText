@@ -22,6 +22,11 @@ from recbole.utils import init_seed
 from recbole.utils.case_study import full_sort_scores
 from typing import Optional, Dict, List
 from sklearn.metrics.pairwise import cosine_similarity
+from logging import getLogger
+from recbole.utils import init_logger, init_seed
+from recbole.trainer import Trainer
+from recbole.config import Config
+from recbole.data import create_dataset, data_preparation
 from models.enhanced_sasrec import EnhancedSASRec
 from models.enhanced_bert4rec import EnhancedBERT4Rec
 
@@ -62,52 +67,32 @@ def generate_config(
         'user': dataset_features['features'].get('user_features', [])
     }
     
-    # Обновляем numerical_features и token_features
-    config['data']['numerical_features'] = dataset_features['features'].get('numerical_features', [])
-    config['data']['token_features'] = dataset_features['features'].get('categorical_features', [])
+    # Обновляем numerical_features
+    config['data']['numerical_features'] = dataset_features['features']['numerical_features']
     
     # Добавляем маппинг полей
     config['data'].update(dataset_features['field_mapping'])
     
-    # Проверяем наличие текстовых полей и добавляем их эмбеддинги как numerical_features
+    # Проверяем наличие текстовых полей
     if 'TEXT_FIELDS' in dataset_features['field_mapping']:
         text_fields = dataset_features['field_mapping']['TEXT_FIELDS']
+        # Добавляем эмбеддинги в numerical_features
         for field in text_fields:
-            emb_features = [f'{field}_emb_{i}' for i in range(384)]
+            emb_features = [f'{field}_emb_{i}' for i in range(384)]  # Размерность BERT
             config['data']['numerical_features'].extend(emb_features)
-            # Добавляем эти поля в load_col для item
-            config['data']['load_col']['item'].extend(emb_features)
     
-    # Обновляем конфигурацию признаков
-    config['data']['feature_config'] = {
-        'use_numerical': bool(dataset_features['features'].get('numerical_features')),
-        'use_categorical': bool(dataset_features['features'].get('categorical_features')),
-        'numerical_features': dataset_features['features'].get('numerical_features', []),
-        'token_features': dataset_features['features'].get('categorical_features', []),
-        'text_fields': dataset_features['field_mapping'].get('TEXT_FIELDS', [])
-    }
+    # Проверяем наличие категориальных признаков
+    if 'categorical_features' in dataset_features['features']:
+        cat_fields = dataset_features['features']['categorical_features']
+        config['data']['token_features'] = cat_fields
     
-    # Добавляем параметры для работы с признаками из конфига модели
-    if 'feature_fusion' not in model_params:
-        model_params['feature_fusion'] = True
-    if 'numerical_projection_dropout' not in model_params:
-        model_params['numerical_projection_dropout'] = config.get('hidden_dropout_prob', 0.1)
-    if 'categorical_embedding_size' not in model_params:
-        model_params['categorical_embedding_size'] = config.get('hidden_size', 256)
-    
-    # Обновляем конфиг параметрами модели
+    # Добавляем параметры модели
     config.update(model_params)
     
     # Добавляем пути к данным и чекпоинтам
     config['data_path'] = output_dir
     config['checkpoint_dir'] = f'./ckpts/saved_{experiment_name}'
-    
-    # Добавляем параметры для sequential моделей
-    config['MAX_ITEM_LIST_LENGTH'] = 50
-    config['ITEM_LIST_LENGTH_FIELD'] = 'item_length'
-    config['LIST_SUFFIX'] = '_list'
-    config['max_seq_length'] = 50
-    
+
     # Сохраняем итоговый конфиг
     os.makedirs(f"{output_dir}/{experiment_name}", exist_ok=True)
     config_path = f'{output_dir}/{experiment_name}/{experiment_name}.yaml'
@@ -315,32 +300,12 @@ def run_experiment(
         # Записываем файл с заголовками, содержащими типы
         with open(f'{output_dir}/{experiment_name}/{experiment_name}.inter', 'w', encoding='utf-8') as f:
             # Определяем типы для каждого поля
-            header_types = []
-            
-            # Базовые поля
-            header_types.extend([
+            header_types = [
                 'user_id:token',
                 'item_id:token',
                 'rating:float',
-                'timestamp:float'
-            ])
-            
-            # Добавляем числовые признаки
-            for field in feature_config_dict[dataset_type]['features'].get('numerical_features', []):
-                if field in inter_df.columns:
-                    header_types.append(f'{field}:float')
-                
-            # Добавляем категориальные признаки
-            for field in feature_config_dict[dataset_type]['features'].get('categorical_features', []):
-                if field in inter_df.columns:
-                    header_types.append(f'{field}:token')
-                
-            # Добавляем эмбеддинги текстовых полей
-            text_fields = feature_config_dict[dataset_type]['field_mapping'].get('TEXT_FIELDS', [])
-            for field in text_fields:
-                for i in range(384):
-                    header_types.append(f'{field}_emb_{i}:float')
-            
+                'timestamp:float'  # Убеждаемся, что timestamp включен
+            ]
             # Записываем заголовок и данные
             f.write('\t'.join(header_types) + '\n')
             inter_df.to_csv(f, sep='\t', index=False, header=False)
@@ -366,7 +331,12 @@ def run_experiment(
             'max_seq_length': 50
         }
 
-        # Генерируем конфиг и запускаем обучение
+        # Получаем класс модели
+        model_class = MODEL_MAPPING.get(model_params['model'])
+        if model_class is None:
+            raise ValueError(f"Unknown model: {model_params['model']}")
+
+        # Создаем конфигурацию
         config, config_path = generate_config(
             features=feature_config_dict,
             model_params=model_params,
@@ -374,27 +344,50 @@ def run_experiment(
             experiment_name=experiment_name,
             dataset_type=dataset_type
         )
+        
+        # Инициализируем конфигурацию
+        config = Config(model=model_class, config_dict=config)
+        init_seed(config['seed'], config['reproducibility'])
+        
+        # Инициализируем логгер
+        init_logger(config)
+        logger = getLogger()
+        logger.info(config)
 
-        # Получаем класс модели
-        model_class = MODEL_MAPPING.get(model_params['model'])
-        if model_class is None:
-            raise ValueError(f"Unknown model: {model_params['model']}")
+        # Создаем датасет
+        dataset = create_dataset(config)
+        logger.info(dataset)
 
-        init_seed(42, True)
-        result = run_recbole(
-            model=model_class,  # Передаем класс модели вместо названия
-            dataset=experiment_name,
-            config_file_list=[config_path],
-            config_dict=config_dict
-        )
+        # Разделяем данные
+        train_data, valid_data, test_data = data_preparation(config, dataset)
+
+        # Инициализируем модель
+        model = model_class(config, train_data.dataset).to(config['device'])
+        logger.info(model)
+
+        # Инициализируем тренер
+        trainer = Trainer(config, model)
+
+        # Обучаем модель
+        best_valid_score, best_valid_result = trainer.fit(train_data, valid_data)
+
+        # Оцениваем на тестовых данных
+        test_result = trainer.evaluate(test_data)
+
+        logger.info('Best valid result: {}'.format(best_valid_result))
+        logger.info('Test result: {}'.format(test_result))
+
         # Запускаем кастомные метрики
-        category_info = {}  # Подгрузи сюда реальные категории
+        category_info = {}  # Подгрузите реальные категории
         custom_metrics = evaluate_with_custom_metrics(preprocessor, config_dict, df_videos_map)
         logger.info(f"Custom Metrics: {custom_metrics}")
 
-        logger.info(f"Training completed. Model saved in ./ckpts/saved_{experiment_name}")
-        return result
-        
+        return {
+            'best_valid_result': best_valid_result,
+            'test_result': test_result,
+            'custom_metrics': custom_metrics
+        }
+
     except Exception as e:
         logger.error(f"Error in experiment pipeline: {str(e)}", exc_info=True)
         raise
@@ -434,3 +427,8 @@ if __name__ == "__main__":
         dataset_type=args.dataset_type,
         output_dir=args.output_dir
     )
+    
+    print("Experiment completed!")
+    print("Best validation results:", result['best_valid_result'])
+    print("Test results:", result['test_result'])
+    print("Custom metrics:", result['custom_metrics'])
