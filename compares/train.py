@@ -60,15 +60,30 @@ def generate_config(
     # Получаем конфигурацию для конкретного датасета
     dataset_features = features[dataset_type]
     
-    # Обновляем load_col из features
+    # Обновляем load_col с правильными именами полей
+    field_mapping = dataset_features['field_mapping']
     config['data']['load_col'] = {
-        'inter': dataset_features['features']['interaction_features'],
-        'item': dataset_features['features'].get('item_features', []),
-        'user': dataset_features['features'].get('user_features', [])
+        'inter': [
+            field_mapping['USER_ID_FIELD'],
+            field_mapping['ITEM_ID_FIELD'],
+            field_mapping['RATING_FIELD'],
+            field_mapping['TIME_FIELD']
+        ]
     }
     
-    # Обновляем numerical_features
-    config['data']['numerical_features'] = dataset_features['features']['numerical_features']
+    # Маппим имена полей в формат RecBole
+    recbole_field_mapping = {
+        field_mapping['USER_ID_FIELD']: 'user_id',
+        field_mapping['ITEM_ID_FIELD']: 'item_id',
+        field_mapping['RATING_FIELD']: 'rating',
+        field_mapping['TIME_FIELD']: 'timestamp'
+    }
+    
+    # Обновляем numerical_features с учетом маппинга
+    numerical_features = dataset_features['features']['numerical_features']
+    config['data']['numerical_features'] = [
+        recbole_field_mapping.get(f, f) for f in numerical_features
+    ]
     
     # Добавляем маппинг полей
     config['data'].update(dataset_features['field_mapping'])
