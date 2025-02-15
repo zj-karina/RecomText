@@ -260,7 +260,6 @@ def run_experiment(
     try:
         # Загружаем данные
         df = pd.read_csv(input_file)
-        
         # Получаем препроцессор для конкретного датасета
         dataset_preprocessor = DATASET_PREPROCESSORS.get(dataset_type)
         if dataset_preprocessor is None:
@@ -268,6 +267,8 @@ def run_experiment(
 
         if dataset_type == 'rutube':
             df['rutube_video_id'] = df['rutube_video_id'].apply(lambda x: x.strip('video_'))
+        else:
+            df = df.sample(1759616)
 
         # Загружаем конфигурацию признаков
         with open(f'configs/feature_configs/{feature_config}.yaml', 'r') as f:
@@ -281,35 +282,17 @@ def run_experiment(
 
         # Сохраняем взаимодействия с явным указанием типов
         if dataset_type == 'rutube':
-            # Базовые поля взаимодействий
             inter_df = df[['viewer_uid', 'rutube_video_id', 'timestamp', 'total_watchtime']].copy()
             inter_df = inter_df.rename(columns={
                 'viewer_uid': 'user_id',
                 'rutube_video_id': 'item_id',
                 'total_watchtime': 'rating'
             })
-            
-            # Добавляем текстовые поля и их эмбеддинги
-            for text_field in feature_config_dict[dataset_type]['field_mapping']['TEXT_FIELDS']:
-                # Добавляем базовое текстовое поле
-                if text_field in df.columns:
-                    inter_df[text_field] = df[text_field]
-                # Добавляем эмбеддинги
-                emb_cols = [col for col in df.columns if col.startswith(f'{text_field}_emb_')]
-                for col in emb_cols:
-                    inter_df[col] = df[col]
-            
-            # Добавляем пользовательские признаки
-            for user_field in feature_config_dict[dataset_type]['field_mapping']['USER_FEATURES']:
-                if user_field in df.columns:
-                    inter_df[user_field] = df[user_field]
-            
-            # Загружаем информацию о видео для метрик
             df_videos = pd.read_parquet("../data/video_info.parquet")
             df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
-            
         else:  # lastfm
-            inter_df = df[['user_id', 'artist_id', 'plays']].copy()
+            inter_df = df[['user_id', 'artist_id', 'timestamp', 'plays']].copy()
+            # inter_df = df[['user_id', 'artist_id', 'plays']].copy()
             inter_df = inter_df.rename(columns={
                 'artist_id': 'item_id',
                 'plays': 'rating'
@@ -332,34 +315,14 @@ def run_experiment(
                 'user_id:token',
                 'item_id:token',
                 'rating:float',
-                'timestamp:float'
+                'timestamp:float'  # Убеждаемся, что timestamp включен
             ]
-            
-            # Добавляем типы для текстовых полей и их эмбеддингов
-            for text_field in feature_config_dict[dataset_type]['field_mapping']['TEXT_FIELDS']:
-                header_types.append(f'{text_field}:token')
-                emb_cols = [col for col in inter_df.columns if col.startswith(f'{text_field}_emb_')]
-                for col in emb_cols:
-                    header_types.append(f'{col}:float')
-            
-            # Добавляем типы для пользовательских признаков
-            for user_field in feature_config_dict[dataset_type]['field_mapping']['USER_FEATURES']:
-                header_types.append(f'{user_field}:token')
-            
             # Записываем заголовок и данные
             f.write('\t'.join(header_types) + '\n')
             inter_df.to_csv(f, sep='\t', index=False, header=False)
 
-        # Создаем конфигурацию
-        config, config_path = generate_config(
-            features=feature_config_dict,
-            model_params=model_params,
-            output_dir=output_dir,
-            experiment_name=experiment_name,
-            dataset_type=dataset_type
-        )
 
-        # Обновляем конфигурацию
+         # Обновляем конфигурацию
         config_dict = {
             'data_path': output_dir,
             'checkpoint_dir': f'./ckpts/saved_{experiment_name}',
@@ -383,6 +346,15 @@ def run_experiment(
         model_class = MODEL_MAPPING.get(model_params['model'])
         if model_class is None:
             raise ValueError(f"Unknown model: {model_params['model']}")
+
+        # Создаем конфигурацию
+        config, config_path = generate_config(
+            features=feature_config_dict,
+            model_params=model_params,
+            output_dir=output_dir,
+            experiment_name=experiment_name,
+            dataset_type=dataset_type
+        )
 
         # Инициализируем конфигурацию
         config.update(config_dict)
@@ -418,14 +390,14 @@ def run_experiment(
         logger.info('Test result: {}'.format(test_result))
 
         # Запускаем кастомные метрики
-        category_info = {}  # Подгрузите реальные категории
-        custom_metrics = evaluate_with_custom_metrics(preprocessor, config_dict, df_videos_map)
-        logger.info(f"Custom Metrics: {custom_metrics}")
+        # category_info = {}  # Подгрузите реальные категории
+        # custom_metrics = evaluate_with_custom_metrics(preprocessor, config_dict, df_videos_map)
+        # logger.info(f"Custom Metrics: {custom_metrics}")
 
         return {
             'best_valid_result': best_valid_result,
-            'test_result': test_result,
-            'custom_metrics': custom_metrics
+            'test_result': test_result
+            # 'custom_metrics': custom_metrics
         }
 
     except Exception as e:
