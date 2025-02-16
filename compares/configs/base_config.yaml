@@ -43,3 +43,4 @@ wandb_project: "recom_text_compares"
 save_dataset: true
 save_checkpoint: true
 log_interval: 100
+gpu_id: 1
