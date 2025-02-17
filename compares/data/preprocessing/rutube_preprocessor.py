@@ -71,6 +71,9 @@ class RutubePreprocessor:
             min_interactions: Минимальное количество взаимодействий
         """
         df = df.copy()
+        
+        self.item_encoder.fit(df['rutube_video_id'])  # Запоминаем все уникальные ID
+        self.user_encoder.fit(df['viewer_uid'])
 
         # Фильтруем пользователей и видео с малым количеством взаимодействий
         user_counts = df['viewer_uid'].value_counts()
@@ -81,8 +84,8 @@ class RutubePreprocessor:
         
         df = df[df['viewer_uid'].isin(valid_users) & df['rutube_video_id'].isin(valid_items)]
         # Обработка ID
-        df['viewer_uid'] = self.user_encoder.fit_transform(df['viewer_uid'])
-        df['rutube_video_id'] = self.item_encoder.fit_transform(df['rutube_video_id'])
+        df['viewer_uid'] = self.user_encoder.transform(df['viewer_uid'])
+        df['rutube_video_id'] = self.item_encoder.transform(df['rutube_video_id'])
         # Обработка временных признаков
         df = self._process_temporal_features(df)
         

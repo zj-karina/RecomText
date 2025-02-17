@@ -42,6 +42,10 @@ class LastFMPreprocessor:
             min_interactions: Минимальное количество взаимодействий
         """
         df = df.copy()
+
+        self.artist_encoder.fit(df['artist_id'])  # Запоминаем все уникальные ID
+        self.user_encoder.fit(df['user_id'])
+
         # Фильтруем пользователей и артистов с малым количеством взаимодействий
         user_counts = df['user_id'].value_counts()
         artist_counts = df['artist_id'].value_counts()
@@ -52,12 +56,12 @@ class LastFMPreprocessor:
         df = df[df['user_id'].isin(valid_users) & df['artist_id'].isin(valid_artists)]
         
         # Обработка ID
-        df['user_id'] = self.user_encoder.fit_transform(df['user_id'])
-        df['artist_id'] = self.artist_encoder.fit_transform(df['artist_id'])
+        df['user_id'] = self.user_encoder.transform(df['user_id'])
+        df['artist_id'] = self.artist_encoder.transform(df['artist_id'])
         
         # Обработка временных признаков
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp']).astype('int64') // 10**9
+        if 'signup' in df.columns:
+            df['timestamp'] = pd.to_datetime(df['signup']).astype('int64') // 10**9
         
         # Обработка социально-демографических признаков
         if 'gender' in df.columns:
