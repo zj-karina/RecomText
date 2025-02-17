@@ -214,6 +214,7 @@ class Trainer:
         if len(indices) > 0 and len(indices[0]) > 0:
             # Получение рекомендаций
             rec_embeddings = torch.tensor(item_embeddings[indices[0]], device=self.device)
+            rec_items = [video_ids[idx][0] for idx in indices[0]]
             # Метаданные рекомендаций
             rec_categories = []
             for idx in indices[0]:
@@ -226,6 +227,7 @@ class Trainer:
         else:
             rec_embeddings = torch.tensor([], device=self.device)
             rec_categories = []
+            rec_items = []
 
         # Демографические данные
         user_demographics = {}
@@ -243,6 +245,7 @@ class Trainer:
         target_id = items_ids[0].item()
         orig_target_video_id = self.val_loader.dataset.reverse_item_id_map.get(target_id)
         target_category = df_videos_map.get(orig_target_video_id, {}).get('category', 'Unknown')
+        target_items = items_ids.cpu().tolist()
 
         user_metrics = metrics_calculator.compute_metrics(
             target_emb,
@@ -253,7 +256,9 @@ class Trainer:
             user_demographics,
             demographic_centroids
         )
-
+        for k in [5, 10, 20]:
+            user_metrics.update(metrics_calculator.compute_ranking_metrics(target_items, rec_items, k))
+            
         return user_metrics
 
     def _update_metrics(self, metrics_accum, user_metrics):
@@ -311,7 +316,8 @@ class Trainer:
             'Semantic Metrics': {k: v for k, v in metrics.items() if 'semantic' in k.lower()},
             'Category Metrics': {k: v for k, v in metrics.items() if 'category' in k.lower() or 'cross' in k.lower()},
             'NDCG': {k: v for k, v in metrics.items() if 'ndcg' in k.lower()},
-            'Demographic Alignment': {k: v for k, v in metrics.items() if 'das_' in k.lower()}
+            'Demographic Alignment': {k: v for k, v in metrics.items() if 'das_' in k.lower()},
+            'Classic Metrics': {k: v for k, v in metrics.items() if k.lower() in ["hitrate@k", "mrr@k", "precision@k", "recall@k"]}
         }
         
         # Выводим метрики по группам

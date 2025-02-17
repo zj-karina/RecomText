@@ -154,4 +154,54 @@ class MetricsCalculator:
             )
             metrics.update(das_scores)
             
-        return metrics 
+        return metrics
+
+    def compute_ranking_metrics(self, target_ids, rec_items, top_k):
+        """
+        Вычисляет метрики ранжирования: Hit Rate, MRR, NDCG, Precision и Recall.
+        
+        :param target_ids: ID целевого элемента или список ID (Ground Truth)
+        :param rec_items: Список рекомендованных элементов (list или np.array)
+        :param top_k: Количество топ-K рекомендаций
+        :return: Словарь с метриками
+        """
+
+        # Обеспечиваем, что target_ids - это множество (на случай списка)
+        if isinstance(target_ids, int):  
+            target_ids = {target_ids}  # Один товар в множество
+        else:
+            target_ids = set(target_ids)  # Несколько товаров
+
+        rec_items = rec_items[:top_k]  # Берем только топ-K рекомендаций
+
+        # Hit Rate (HR@K) – хотя бы один таргетный товар в рекомендациях
+        hit = int(len(target_ids.intersection(rec_items)) > 0)
+
+        # MRR@K – Reciprocal Rank первого найденного релевантного товара
+        mrr = 0.0
+        for i, item in enumerate(rec_items):
+            if item in target_ids:
+                mrr = 1.0 / (i + 1)
+                break  # Берем первый релевантный товар
+
+        # DCG@K – Discounted Cumulative Gain
+        dcg = sum([1.0 / np.log2(i + 2) for i, item in enumerate(rec_items) if item in target_ids])
+
+        # IDCG@K – Ideal DCG (на случай, если все target_items были наверху)
+        idcg = sum([1.0 / np.log2(i + 2) for i in range(min(len(target_ids), top_k))])
+        ndcg = dcg / idcg if idcg > 0 else 0.0  # NDCG@K
+
+        # Precision@K – Доля релевантных товаров среди топ-K
+        precision = len(target_ids.intersection(rec_items)) / top_k
+
+        # Recall@K – Доля покрытых таргетных товаров
+        recall = len(target_ids.intersection(rec_items)) / len(target_ids)
+
+        return {
+            "HitRate@K": hit,
+            "MRR@K": mrr,
+            "NDCG@K": ndcg,
+            "Precision@K": precision,
+            "Recall@K": recall
+        }
+

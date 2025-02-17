@@ -44,3 +44,6 @@ save_dataset: true
 save_checkpoint: true
 log_interval: 100
 gpu_id: 1
+
+sim_threshold_precision: 0.79 #0.89
+sim_threshold_ndcg: 0.8 #0.83
