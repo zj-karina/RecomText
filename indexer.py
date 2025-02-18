@@ -12,6 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 
 from models.multimodal_model import MultimodalRecommendationModel
+from models.text_model import TextOnlyRecommendationModel
 
 class VideoInfoDataset(Dataset):
     """
@@ -103,7 +104,10 @@ def main(config=None):
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
     # 5) Инициализируем модель с размерами из датасета
-    model = MultimodalRecommendationModel.from_pretrained(model_path)
+    if config['model'].get('use_fusion', True):
+        model = MultimodalRecommendationModel.from_pretrained(model_path)
+    else:
+        model = TextOnlyRecommendationModel.from_pretrained(model_path)
 
     model.to(device)
     model.eval()

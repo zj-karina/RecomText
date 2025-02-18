@@ -6,6 +6,7 @@ import os
 from transformers import AutoTokenizer
 from data.dataset import BuildTrainDataset, get_dataloader
 from models.multimodal_model import MultimodalRecommendationModel
+from models.text_model import TextOnlyRecommendationModel
 from trainers.trainer import Trainer
 
 def train_model(config_path='configs/config.yaml'):
@@ -59,18 +60,25 @@ def train_model(config_path='configs/config.yaml'):
     )
     val_loader = get_dataloader(
         val_dataset, 
-        batch_size=config['data']['batch_size'],
+        batch_size = config['data'].get('eval_batch_size', config['data'].get('batch_size')),
         shuffle=False
     )
     
     # Initialize model
-    model = MultimodalRecommendationModel(
-        text_model_name=config['model']['text_model_name'],
-        user_vocab_size=len(train_dataset.user_id_map),
-        items_vocab_size=len(train_dataset.item_id_map),
-        id_embed_dim=config['model']['id_embed_dim'],
-        text_embed_dim=config['model']['text_embed_dim']
-    )
+    if config['model'].get('use_fusion', True):
+        model = MultimodalRecommendationModel(
+            text_model_name=config['model']['text_model_name'],
+            user_vocab_size=len(train_dataset.user_id_map),
+            items_vocab_size=len(train_dataset.item_id_map),
+            id_embed_dim=config['model']['id_embed_dim'],
+            text_embed_dim=config['model']['text_embed_dim']
+        )
+        print("Training Multimodal Recommendation Model")
+    else:
+        model = TextOnlyRecommendationModel(
+            text_model_name=config['model']['text_model_name'],
+        )
+        print("Training Text-Only Recommendation Model")
     
     # Initialize optimizer
     optimizer = torch.optim.AdamW(
