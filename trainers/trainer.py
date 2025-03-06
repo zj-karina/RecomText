@@ -93,6 +93,20 @@ class Trainer:
         df_videos = pd.read_parquet("./data/video_info.parquet")
         df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
 
+        try:
+           from indexer import main as update_index
+           index_config = self.config.copy()
+           index_config['inference']['model_path'] = "temp_current_model"
+           # Сохраняем текущее состояние модели во временную директорию
+           os.makedirs("temp_current_model", exist_ok=True)
+           self.model.save_pretrained("temp_current_model")
+           # Обновляем индекс
+           update_index(config=index_config)
+           print("FAISS index updated with current model weights")
+        except Exception as e:
+           print(f"Error updating index: {str(e)}")
+           return None
+
         # Проверка и обновление индекса
         index_path = self.config['inference']['index_path']
         ids_path = self.config['inference']['ids_path']
