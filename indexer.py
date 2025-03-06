@@ -143,6 +143,8 @@ def main(config=None):
             items_embeddings_np = items_embeddings.cpu().numpy().astype('float32')
             item_ids_np = item_ids_batch.cpu().numpy()
 
+
+
             all_embeddings.append(items_embeddings_np)
             all_ids.extend(item_ids_np)
 

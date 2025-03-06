@@ -6,6 +6,7 @@ import glob
 import math
 import yaml
 import torch
+import copy
 from tqdm import tqdm
 from datetime import datetime
 from typing import Optional, Dict, List
@@ -131,7 +132,7 @@ def cosine_similarity_faiss(vecs1, vecs2):
     index.add(vecs2.detach().cpu().numpy())
 
     # Поиск сходства
-    k_search = min(vecs2.shape[0], 2048) #batch
+    k_search = vecs2.shape[0]
     D, _ = index.search(vecs1.detach().cpu().numpy(), k_search)
     # D, _ = index.search(vecs1.detach().cpu().numpy(), vecs2.shape[0])
     return torch.tensor(D, device=vecs1.device)
@@ -140,10 +141,11 @@ def evaluate_with_custom_metrics(preprocessor, config, dataset_type, category_in
     """
     Evaluate metrics on GPU using a single batch loop to avoid memory issues.
     """
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Загрузка модели и данных
     model_path = get_latest_checkpoint(config['checkpoint_dir'])
+
     (_, model, dataset, train_data, valid_data, test_data) = load_data_and_model(model_path)
     model.to(device).eval()
 
@@ -156,7 +158,6 @@ def evaluate_with_custom_metrics(preprocessor, config, dataset_type, category_in
     
     # Уникальные пользователи для обработки
     unique_users, user_indices = torch.unique(all_users, return_inverse=True)
-    
     # Настройка батчей
     batch_size = config.get('eval_batch_size', 2048)
     results = {'SP@K': 0, 'CCR': 0, 'NDCG': 0}
@@ -166,13 +167,26 @@ def evaluate_with_custom_metrics(preprocessor, config, dataset_type, category_in
     sim_threshold_ndcg = config.get('sim_threshold_ndcg', 0.83)
 
     print(f"Total users: {len(all_users)}")
-
+    original_inter_feat = test_data.dataset.inter_feat
     # Обработка батчей
     for i in tqdm(range(0, len(all_users), batch_size), total=len(all_users) // batch_size, desc="Processing batches"):
         batch_users = all_users[i : i + batch_size].to(device)
         batch_items = all_items[i : i + batch_size].to(device)
         
         # Получение предсказаний модели
+        batch_user_set = set(batch_users.cpu().numpy())  # Уникальные пользователи из батча
+        batch_item_set = set(batch_items.cpu().numpy())  # Уникальные айтемы из батча
+
+        # Фильтруем dataset по user_id и item_id, которые есть в батче
+        mask_users = torch.isin(test_data.dataset.inter_feat['user_id'], batch_users)
+        mask_items = torch.isin(test_data.dataset.inter_feat['item_id'], batch_items)
+        mask = mask_users & mask_items
+
+        filtered_inter_feat = test_data.dataset.inter_feat[mask]
+        
+        # Подменяем inter_feat на отфильтрованный
+        test_data.dataset.inter_feat = filtered_inter_feat
+
         with torch.no_grad():
             batch_scores = full_sort_scores(batch_users, model, test_data, device=device)
 
@@ -190,7 +204,9 @@ def evaluate_with_custom_metrics(preprocessor, config, dataset_type, category_in
         results['CCR'] += ccr
         results['NDCG'] += ndcg
         count += batch_scores_cpu.shape[0]
-        
+
+        test_data.dataset.inter_feat = original_inter_feat
+
         # Очистка памяти
         del batch_scores, batch_scores_cpu
         torch.cuda.empty_cache()
@@ -314,7 +330,7 @@ def get_latest_checkpoint(checkpoint_dir: str) -> str:
     if not checkpoint_files:
         raise FileNotFoundError(f"No checkpoint files found in {checkpoint_dir}")
     
-    latest_checkpoint = max(checkpoint_files, key=os.path.getmtime)  # Выбираем самый последний по дате изменения
+    latest_checkpoint = max(checkpoint_files, key=os.path.getmtime) # Выбираем самый последний по дате изменения
     return latest_checkpoint
 
 
