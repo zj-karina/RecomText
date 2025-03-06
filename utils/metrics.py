@@ -120,9 +120,8 @@ class MetricsCalculator:
                        recommended_embeddings: torch.Tensor,
                        target_category: str,
                        recommended_categories: List[str],
-                       k: int,
-                       user_demographics: Dict[str, str] = None,
-                       demographic_centroids: Dict[str, Dict[str, torch.Tensor]] = None) -> Dict[str, float]:
+                       k: int) -> Dict[str, float]: #user_demographics: Dict[str, str] = None,
+                       #demographic_centroids: Dict[str, Dict[str, torch.Tensor]] = None
         """
         Вычисляет все метрики для одного пользователя.
         """
@@ -146,12 +145,12 @@ class MetricsCalculator:
         }
         
         # Добавляем DAS если доступны демографические данные
-        if user_demographics and demographic_centroids:
-            das_scores = self.demographic_alignment_score(
-                user_demographics,
-                recommended_embeddings,
-                demographic_centroids
-            )
-            metrics.update(das_scores)
+        # if user_demographics and demographic_centroids:
+        #     das_scores = self.demographic_alignment_score(
+        #         user_demographics,
+        #         recommended_embeddings,
+        #         demographic_centroids
+        #     )
+        #     metrics.update(das_scores)
             
         return metrics 
