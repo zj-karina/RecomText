@@ -92,13 +92,6 @@ class Trainer:
         textual_history = pd.read_parquet('./data/textual_history.parquet')
         df_videos = pd.read_parquet("./data/video_info.parquet")
         df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
-        
-        # Загружаем данные о просмотрах пользователей для классических метрик
-        users_watch_history = pd.read_parquet('./data/id_history.parquet')
-        с = {}
-        for idx, row in users_watch_history.iterrows():
-            user_id = row['viewer_uid']
-            watched_videos = [str(vid) for vid in row['clean_video_id']] if 'clean_video_id' in row else []
 
         # Проверка и обновление индекса
         index_path = self.config['inference']['index_path']
