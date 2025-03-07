@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn.functional as F
 import numpy as np
-from typing import Dict, List, Union, Tuple
+from typing import Dict, List, Union, Tuple, Set
 
 class MetricsCalculator:
     """Калькулятор специализированных метрик для рекомендательной системы."""
@@ -115,6 +115,140 @@ class MetricsCalculator:
                 das_scores[f"das_{demo_feature}"] = similarities.mean().item()
         return das_scores
 
+    def precision_at_k(self, 
+                     recommended_ids: List[str], 
+                     relevant_ids: Set[str], 
+                     k: int) -> float:
+        """
+        Args:
+            recommended_ids: список ID рекомендованных элементов
+            relevant_ids: множество ID релевантных элементов
+            k: количество рекомендаций для оценки
+        """
+        if not recommended_ids or k <= 0:
+            return 0.0
+            
+        # Обрезаем рекомендации до k элементов
+        recommended_at_k = recommended_ids[:k]
+        
+        # Считаем количество релевантных элементов в топ-k
+        hits = sum(1 for item_id in recommended_at_k if item_id in relevant_ids)
+        
+        return hits / min(k, len(recommended_at_k))
+
+    def recall_at_k(self, 
+                  recommended_ids: List[str], 
+                  relevant_ids: Set[str], 
+                  k: int) -> float:
+        """
+        Args:
+            recommended_ids: список ID рекомендованных элементов
+            relevant_ids: множество ID релевантных элементов
+            k: количество рекомендаций для оценки
+        """
+        if not recommended_ids or not relevant_ids or k <= 0:
+            return 0.0
+            
+        recommended_at_k = recommended_ids[:k]
+        hits = sum(1 for item_id in recommended_at_k if item_id in relevant_ids)
+        
+        return hits / len(relevant_ids) if len(relevant_ids) > 0 else 0.0
+
+    def ndcg_at_k(self, 
+                recommended_ids: List[str], 
+                relevant_ids: Set[str], 
+                relevance_scores: Dict[str, float] = None,
+                k: int = 10) -> float:
+        """
+        Args:
+            recommended_ids: список ID рекомендованных элементов
+            relevant_ids: множество ID релевантных элементов
+            relevance_scores: словарь с оценками релевантности для каждого ID (опционально)
+            k: количество рекомендаций для оценки
+        """
+        if not recommended_ids or k <= 0:
+            return 0.0
+            
+        recommended_at_k = recommended_ids[:k]
+        
+        if relevance_scores:
+            relevances = [
+                relevance_scores.get(item_id, 0.0) if item_id in relevant_ids else 0.0
+                for item_id in recommended_at_k
+            ]
+        else:
+            relevances = [1.0 if item_id in relevant_ids else 0.0 for item_id in recommended_at_k]
+            
+        dcg = sum(
+            rel / math.log2(i + 2) 
+            for i, rel in enumerate(relevances)
+        )
+            
+        if relevance_scores:
+            ideal_relevances = sorted(
+                [relevance_scores.get(item_id, 0.0) for item_id in relevant_ids if item_id in relevance_scores],
+                reverse=True
+            )
+        else:
+            ideal_relevances = [1.0] * len(relevant_ids)
+            
+        ideal_relevances = ideal_relevances[:k]
+            
+        idcg = sum(
+            rel / math.log2(i + 2) 
+            for i, rel in enumerate(ideal_relevances)
+        )
+            
+        return dcg / idcg if idcg > 0 else 0.0
+
+    def mrr_at_k(self, 
+               recommended_ids: List[str], 
+               relevant_ids: Set[str], 
+               k: int) -> float:
+        """
+        Args:
+            recommended_ids: список ID рекомендованных элементов
+            relevant_ids: множество ID релевантных элементов
+            k: количество рекомендаций для оценки
+        """
+        if not recommended_ids or not relevant_ids or k <= 0:
+            return 0.0
+            
+        recommended_at_k = recommended_ids[:k]
+        
+        for i, item_id in enumerate(recommended_at_k):
+            if item_id in relevant_ids:
+                return 1.0 / (i + 1)  # RR = 1 / rank
+                
+        return 0.0
+
+    def compute_classic_metrics(self,
+                              recommended_ids: List[str],
+                              relevant_ids: Set[str],
+                              ks: List[int] = [5, 10],
+                              relevance_scores: Dict[str, float] = None) -> Dict[str, float]:
+        """
+        Вычисляет все классические метрики рекомендательных систем для заданных K.
+        
+        Args:
+            recommended_ids: список ID рекомендованных элементов
+            relevant_ids: множество ID релевантных элементов
+            ks: список значений K для вычисления метрик
+            relevance_scores: словарь с оценками релевантности для каждого ID (опционально)
+            
+        Returns:
+            Dict с вычисленными метриками
+        """
+        metrics = {}
+        
+        for k in ks:
+            metrics[f"precision@k"] = self.precision_at_k(recommended_ids, relevant_ids, k)
+            metrics[f"recall@k"] = self.recall_at_k(recommended_ids, relevant_ids, k)
+            metrics[f"ndcg@k"] = self.ndcg_at_k(recommended_ids, relevant_ids, relevance_scores, k)
+            metrics[f"mrr@k"] = self.mrr_at_k(recommended_ids, relevant_ids, k)
+            
+        return metrics
+
     def compute_metrics(self,
                        target_embedding: torch.Tensor,
                        recommended_embeddings: torch.Tensor,
@@ -122,10 +256,29 @@ class MetricsCalculator:
                        recommended_categories: List[str],
                        k: int,
                        user_demographics: Dict[str, str] = None,
-                       demographic_centroids: Dict[str, Dict[str, torch.Tensor]] = None) -> Dict[str, float]:
+                       demographic_centroids: Dict[str, Dict[str, torch.Tensor]] = None,
+                       recommended_ids: List[str] = None,
+                       relevant_ids: Set[str] = None,
+                       relevance_scores: Dict[str, float] = None) -> Dict[str, float]:
         """
         Вычисляет все метрики для одного пользователя.
+        
+        Args:
+            target_embedding: целевой эмбеддинг
+            recommended_embeddings: эмбеддинги рекомендованных элементов
+            target_category: целевая категория
+            recommended_categories: категории рекомендованных элементов
+            k: количество рекомендаций для оценки
+            user_demographics: словарь с демографическими характеристиками пользователя
+            demographic_centroids: словарь центроидов для каждой демографической группы
+            recommended_ids: список ID рекомендованных элементов
+            relevant_ids: множество ID релевантных элементов
+            relevance_scores: словарь с оценками релевантности для каждого ID
+            
+        Returns:
+            Dict с вычисленными метриками
         """
+        metrics = {}
         metrics = {
             "semantic_precision@k": self.semantic_precision_at_k(
                 target_embedding,
@@ -154,4 +307,12 @@ class MetricsCalculator:
             )
             metrics.update(das_scores)
             
-        return metrics 
+        classic_metrics = self.compute_classic_metrics(
+            recommended_ids,
+            relevant_ids,
+            ks=[k],
+            relevance_scores=relevance_scores
+        )
+        metrics.update(classic_metrics)
+            
+        return metrics

@@ -92,6 +92,13 @@ class Trainer:
         textual_history = pd.read_parquet('./data/textual_history.parquet')
         df_videos = pd.read_parquet("./data/video_info.parquet")
         df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
+        
+        # Загружаем данные о просмотрах пользователей для классических метрик
+        users_watch_history = pd.read_parquet('./data/id_history.parquet')
+        с = {}
+        for idx, row in users_watch_history.iterrows():
+            user_id = row['viewer_uid']
+            watched_videos = [str(vid) for vid in row['clean_video_id']] if 'clean_video_id' in row else []
 
         # Проверка и обновление индекса
         index_path = self.config['inference']['index_path']
@@ -155,9 +162,10 @@ class Trainer:
         sim_threshold_ndcg = self.config['metrics'].get('sim_threshold_ndcg', 0.8)
         metrics_calculator = MetricsCalculator(sim_threshold_precision=sim_threshold_precision,
                                                sim_threshold_ndcg=sim_threshold_ndcg)
-        metrics_accum = {metric: 0.0 for metric in ["semantic_precision@k", "cross_category_relevance", "contextual_ndcg"]}
-        num_users = 0
+        metrics_accum = {metric: 0.0 for metric in ["semantic_precision@k", "cross_category_relevance", "contextual_ndcg", "precision@k", "recall@k", "ndcg@k", "mrr@k"]}
         top_k = self.config['inference'].get('top_k', 10)
+            
+        num_users = 0
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(self.val_loader, desc="Validation")):
@@ -181,10 +189,9 @@ class Trainer:
                 total_loss += (con_loss + self.config['training']['lambda_rec'] * rec_loss).item()
                 total_recommendation_loss += rec_loss
                 total_contrastive_loss += con_loss
-                
-                # Поиск рекомендаций и расчет метрик
-                for i in range(user_embeddings.size(0)):
 
+                # Поиск рекомендаций и расчет метрик
+                for i in range(user_embeddings.size(0))[:1]:
                     user_metrics = self._process_user(
                         user_embeddings[i], 
                         items_embeddings[i], 
@@ -198,7 +205,7 @@ class Trainer:
                         top_k,
                         demographic_data,
                         demographic_features,
-                        demographic_centroids
+                        demographic_centroids,
                     )
                     self._update_metrics(metrics_accum, user_metrics)
                     num_users += 1
@@ -206,44 +213,61 @@ class Trainer:
         return self._compile_metrics(total_loss, total_contrastive_loss, total_recommendation_loss, metrics_accum, num_users)
 
     def _process_user(self, user_emb, target_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings, metrics_calculator, top_k, demographic_data, demographic_features, demographic_centroids):
-        """Обработка одного пользователя для расчета метрик"""
-        # Поиск рекомендаций
+        """Process single user for metrics calculation with proper ground truth handling"""
+        # Search for recommendations based on user embedding
         user_emb_np = user_emb.cpu().numpy().astype('float32')
         distances, indices = index.search(user_emb_np.reshape(1, -1), top_k)
         
+        # List of recommended video IDs for metrics
+        rec_embeddings = []
+        rec_categories = []
+        relevant_ids = []
+        
         if len(indices) > 0 and len(indices[0]) > 0:
-            # Получение рекомендаций
+            # Get recommendation embeddings
             rec_embeddings = torch.tensor(item_embeddings[indices[0]], device=self.device)
-            # Метаданные рекомендаций
-            rec_categories = []
+            recommended_ids = [video_ids[idx] for idx in indices[0]]
+            
+            # Get metadata for recommendations
             for idx in indices[0]:
-                video_id = video_ids[idx][0]
-                orig_video_id = self.val_loader.dataset.reverse_item_id_map.get(video_id)
+                # Get the video ID from the FAISS index
+                faiss_video_id = str(video_ids[idx][0])
+                # recommended_ids.append(faiss_video_id)
+                
+                # Convert to original video ID for category lookup
+                orig_video_id = self.val_loader.dataset.reverse_item_id_map.get(int(faiss_video_id))
+                
+                relevant_ids.append(orig_video_id)
+                relevance_scores[str(item_id)] = 1.0
+                
                 if orig_video_id in df_videos_map:
                     rec_categories.append(df_videos_map[orig_video_id].get('category', 'Unknown'))
                 else:
                     rec_categories.append('Unknown')
-        else:
-            rec_embeddings = torch.tensor([], device=self.device)
-            rec_categories = []
 
-        # Демографические данные
+        print(f"\nGT Ids: {relevant_ids}")
+        print(f"Predicted Ids: {recommended_ids}")
+        
+        # Target category info
+        target_id = items_ids[0].item() if len(items_ids) > 0 and items_ids[0].item() > 0 else None
+        target_category = 'Unknown'
+        if target_id is not None:
+            orig_target_video_id = self.val_loader.dataset.reverse_item_id_map.get(target_id)
+            if orig_target_video_id in df_videos_map:
+                target_category = df_videos_map[orig_target_video_id].get('category', 'Unknown')
+        
+        # User demographic data
         user_demographics = {}
         if demographic_data is not None:
             orig_user_id = self.val_loader.dataset.reverse_user_id_map.get(user_id.item())
-
-            # Фильтруем нужного пользователя по его ID
+            # Filter for the target user
             user_row = demographic_data[demographic_data['viewer_uid'] == orig_user_id]
-
-            if not user_row.empty:  # Проверяем, есть ли данные
+            if not user_row.empty:
                 user_row = user_row.iloc[0]
-                user_demographics = {feature: user_row[feature] for feature in demographic_features}  # Заполняем user_demo сразу
-
-        # Целевой товар
-        target_id = items_ids[0].item()
-        orig_target_video_id = self.val_loader.dataset.reverse_item_id_map.get(target_id)
-        target_category = df_videos_map.get(orig_target_video_id, {}).get('category', 'Unknown')
-
+                user_demographics = {feature: user_row[feature] for feature in demographic_features 
+                                   if feature in user_row}
+        
+        # Calculate metrics
         user_metrics = metrics_calculator.compute_metrics(
             target_emb,
             rec_embeddings,
@@ -251,9 +275,12 @@ class Trainer:
             rec_categories,
             top_k,
             user_demographics,
-            demographic_centroids
+            demographic_centroids,
+            recommended_ids,
+            relevant_ids,
+            relevance_scores
         )
-
+    
         return user_metrics
 
     def _update_metrics(self, metrics_accum, user_metrics):
@@ -311,7 +338,8 @@ class Trainer:
             'Semantic Metrics': {k: v for k, v in metrics.items() if 'semantic' in k.lower()},
             'Category Metrics': {k: v for k, v in metrics.items() if 'category' in k.lower() or 'cross' in k.lower()},
             'NDCG': {k: v for k, v in metrics.items() if 'ndcg' in k.lower()},
-            'Demographic Alignment': {k: v for k, v in metrics.items() if 'das_' in k.lower()}
+            'Demographic Alignment': {k: v for k, v in metrics.items() if 'das_' in k.lower()},
+            'Classical RecSys Metrics': {k: v for k, v in metrics.items() if any(x in k.lower() for x in ['precision@', 'recall@', 'mrr@']) and 'semantic' not in k.lower()}
         }
         
         # Выводим метрики по группам
@@ -387,4 +415,4 @@ class Trainer:
         """Перемещение данных на устройство."""
         if isinstance(x, dict):
             return {k: v.to(self.device) for k, v in x.items()}
-        return x.to(self.device) 
+        return x.to(self.device)
