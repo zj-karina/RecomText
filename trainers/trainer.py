@@ -208,7 +208,7 @@ class Trainer:
 
         return self._compile_metrics(total_loss, total_contrastive_loss, total_recommendation_loss, metrics_accum, num_users)
 
-    def _process_user(self, user_emb, target_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings, metrics_calculator, top_k): #demographic_data, demographic_features, demographic_centroids
+    def _process_user(self, user_emb, item_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings_array, metrics_calculator, top_k):
         """Обработка одного пользователя для расчета метрик"""
         # Поиск рекомендаций
         user_emb_np = user_emb.cpu().numpy().astype('float32')
@@ -216,7 +216,7 @@ class Trainer:
         
         if len(indices) > 0 and len(indices[0]) > 0:
             # Получение рекомендаций
-            rec_embeddings = torch.tensor(item_embeddings[indices[0]], device=self.device)
+            rec_embeddings = torch.tensor(item_embeddings_array[indices[0]], device=self.device)
             # Метаданные рекомендаций
             rec_categories = []
             for idx in indices[0]:
@@ -248,8 +248,8 @@ class Trainer:
         target_category = df_videos_map.get(orig_target_video_id, {}).get('category', 'Unknown')
 
         user_metrics = metrics_calculator.compute_metrics(
-            target_emb,
-            rec_embeddings,
+            item_emb,  # Это эмбеддинг товара, который пользователь уже просмотрел
+            rec_embeddings,  # Это эмбеддинги кандидатов на рекомендацию
             target_category,
             rec_categories,
             top_k
