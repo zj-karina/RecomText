@@ -18,7 +18,17 @@ class Trainer:
         self.optimizer = optimizer
         self.config = config
         
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Set device based on config
+        torch.cuda.set_device('cuda:1')
+        self.device = torch.device(f"cuda:{1}")
+        # if config.get('use_gpu', True) and torch.cuda.is_available():
+        #     gpu_id = config.get('gpu_id', 0)
+        #     torch.cuda.set_device(gpu_id)  # Explicitly set CUDA device
+        #     self.device = torch.device(f"cuda:{gpu_id}")
+        # else:
+        #     self.device = torch.device("cpu")
+            
+        print(f"Using device: {self.device}")  # Add debug print
         self.model.to(self.device)
 
         name_contrastive_loss = config.get('training', {}).get('contrastive_loss', 'cos_emb') # for future experiments with new losses

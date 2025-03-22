@@ -6,9 +6,10 @@ from datetime import datetime
 from data.preprocessing.feature_preprocessor import FeaturePreprocessor
 
 class RutubePreprocessor:
-    def __init__(self):
+    def __init__(self, device=None):
         self.user_encoder = LabelEncoder()
         self.item_encoder = LabelEncoder()
+        self.device = device
         
     def _process_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Обработка временных признаков"""
@@ -97,7 +98,7 @@ class RutubePreprocessor:
             all_features.update([f for f in features if f in df.columns])
         
         # Обработка текстовых и других признаков через FeaturePreprocessor
-        feature_processor = FeaturePreprocessor()
+        feature_processor = FeaturePreprocessor(device=self.device)
         df = feature_processor.process_features(
             df=df,
             feature_config=feature_config,
@@ -121,10 +122,15 @@ class RutubePreprocessor:
         # Добавляем эмбеддинги текстовых полей
         text_fields = feature_config['field_mapping'].get('TEXT_FIELDS', [])
         for field in text_fields:
-            emb_features = [f'{field}_emb_{i}' for i in range(384)]
-            all_features.update(emb_features)
+            if field in df.columns:
+                emb_field = f'{field}_embedding'
+                emb_list_field = f'{field}_embedding_list'
+                if emb_field in df.columns:
+                    all_features.add(emb_field)
+                if emb_list_field in df.columns:
+                    all_features.add(emb_list_field)
         
         # Обновляем список признаков после всех преобразований
         available_features = [f for f in all_features if f in df.columns]
-
+        print(f"available_features = {available_features}")
         return df[available_features] 

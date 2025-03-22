@@ -1,3 +1,5 @@
+import os
+
 import pandas as pd
 import numpy as np
 import os
@@ -55,6 +57,11 @@ def generate_config(
     with open(base_config_path, 'r') as f:
         config = yaml.safe_load(f)
     
+    # Set GPU configuration
+    config['gpu_id'] = 0
+    config['use_gpu'] = True
+    config['device'] = 'cuda:0'
+    
     # Получаем конфигурацию для конкретного датасета
     dataset_features = features[dataset_type]
     
@@ -76,8 +83,10 @@ def generate_config(
         text_fields = dataset_features['field_mapping']['TEXT_FIELDS']
         # Добавляем эмбеддинги в numerical_features
         for field in text_fields:
-            emb_features = [f'{field}_emb_{i}' for i in range(384)]  # Размерность BERT
-            config['data']['numerical_features'].extend(emb_features)
+            config['data']['numerical_features'].extend([
+                f'{field}_embedding',
+                f'{field}_embedding_list'
+            ])
     
     # Проверяем наличие категориальных признаков
     if 'categorical_features' in dataset_features['features']:
@@ -126,7 +135,7 @@ def cosine_similarity_faiss(vecs1, vecs2):
     # Создание индекса Faiss
     index = faiss.IndexFlatIP(vecs2.shape[1])  # Используем внутреннее произведение
     res = faiss.StandardGpuResources()  # Используем GPU
-    index = faiss.index_cpu_to_gpu(res, 0, index)  # Переносим индекс на GPU
+    index = faiss.index_cpu_to_gpu(res, 1, index)  # Changed from 0 to 1 to use CUDA:1
 
     # Добавление векторов в индекс
     index.add(vecs2.detach().cpu().numpy())
@@ -134,20 +143,27 @@ def cosine_similarity_faiss(vecs1, vecs2):
     # Поиск сходства
     k_search = vecs2.shape[0]
     D, _ = index.search(vecs1.detach().cpu().numpy(), k_search)
-    # D, _ = index.search(vecs1.detach().cpu().numpy(), vecs2.shape[0])
     return torch.tensor(D, device=vecs1.device)
 
 def evaluate_with_custom_metrics(preprocessor, config, dataset_type, category_info, k=10):
     """
     Evaluate metrics on GPU using a single batch loop to avoid memory issues.
     """
+    # Set device before loading model
+    # torch.cuda.set_device(1)  # Explicitly set CUDA device
     device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     
     # Загрузка модели и данных
     model_path = get_latest_checkpoint(config['checkpoint_dir'])
 
-    (_, model, dataset, train_data, valid_data, test_data) = load_data_and_model(model_path)
-    model.to(device).eval()
+    # Load model with explicit device setting
+    (_, model, dataset, train_data, valid_data, test_data) = load_data_and_model(
+        model_path
+    )
+    
+    # Move model to correct device
+    model.to(device)
+    model.eval()
 
     # Получение эмбеддингов айтемов и данных для тестирования
     item_embeddings = model.item_embedding.weight.to(device)
@@ -346,6 +362,26 @@ def run_experiment(
     logger = setup_logging()
 
     try:
+        torch.cuda.set_device('cuda:1')
+        os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
+        def check_available_gpus():
+            if not torch.cuda.is_available():
+                print("CUDA is not available. No GPU found.")
+                return
+        
+        num_gpus = torch.cuda.device_count()
+        print(f"Number of available GPUs: {num_gpus}")
+    
+        for i in range(num_gpus):
+            print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+            print(f"  Memory Allocated: {torch.cuda.memory_allocated(i) / 1024**3:.2f} GB")
+            print(f"  Memory Cached: {torch.cuda.memory_reserved(i) / 1024**3:.2f} GB")
+            print(f"  Memory Free: {(torch.cuda.get_device_properties(i).total_memory - torch.cuda.memory_allocated(i)) / 1024**3:.2f} GB")
+            print()
+    
+        check_available_gpus()
+
         # Загружаем данные
         df = pd.read_csv(input_file)
         # Получаем препроцессор для конкретного датасета
@@ -360,14 +396,67 @@ def run_experiment(
         with open(f'configs/feature_configs/{feature_config}.yaml', 'r') as f:
             feature_config_dict = yaml.safe_load(f)
         
-        # Инициализируем препроцессор датасета
-        preprocessor = dataset_preprocessor()
+        # Load textual data before preprocessing
+        if dataset_type == 'rutube':
+            month_dict = {
+                1: 'января',
+                2: 'февраля',
+                3: 'марта',
+                4: 'апреля',
+                5: 'мая',
+                6: 'июня',
+                7: 'июля',
+                8: 'августа',
+                9: 'сентября',
+                10: 'октября',
+                11: 'ноября',
+                12: 'декабря'
+            }
+            
+            # Форматируем дату
+            df['formatted_date'] = df['day'].astype(str) + ' ' + df['month'].map(month_dict)
         
+            # Определяем тип клиента
+            df['client_type'] = df['ua_client_type'].apply(
+                lambda x: 'браузере' if x == 'browser' else 'приложении' if x == 'mobile app' else x
+            )
+            
+            # Создаем описание просмотра
+            def create_view_description(row):
+                parts = []
+        
+                if pd.notna(row['title']):
+                    parts.append('Название видео: ' + str(row['title']))
+                    
+                if pd.notna(row['category']):
+                    parts.append('категории ' + str(row['category']))
+                    
+                if pd.notna(row['client_type']):
+                    parts.append(f"просмотрено в {row['client_type']}")
+                    
+                if pd.notna(row['ua_os']):
+                    parts.append(f"ОС {row['ua_os']}")
+                    
+                if pd.notna(row['formatted_date']):
+                    parts.append(str(row['formatted_date']))
+                    
+                # Сохраняем категорию отдельно
+                category = row.get('category', 'unknown')
+                    
+                return ' '.join(parts) if parts else None, category
+            
+            # Добавляем подробности о просмотре и категорию
+            df[['detailed_view', 'category']] = df.apply(create_view_description, axis=1, result_type='expand')
+        
+        preprocessor = dataset_preprocessor(device='cuda:1')
+        
+        logger.info(f"Start preprocessing, available features: {df.columns.tolist()}")
+
         # Предобработка данных
         df = preprocessor.preprocess(df, feature_config_dict[dataset_type])
+        logger.info(f"After preprocessing, available features: {df.columns.tolist()}")
 
         # Сохраняем взаимодействия с явным указанием типов
-        df_videos_map = None
         if dataset_type == 'rutube':
             inter_df = df[['viewer_uid', 'rutube_video_id', 'timestamp', 'total_watchtime']].copy()
             inter_df = inter_df.rename(columns={
@@ -375,17 +464,18 @@ def run_experiment(
                 'rutube_video_id': 'item_id',
                 'total_watchtime': 'rating'
             })
-            df_videos = pd.read_parquet("~/RecomText/data/video_info.parquet")
-            df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
-
-            textual_history = pd.read_parquet('~/RecomText/data/textual_history.parquet')
-            inter_df['title'] = textual_history['detailed_view']
-            # id_history = pd.read_parquet('./data/id_history.parquet')
-            # user_descriptions = pd.read_parquet('./data/user_descriptions.parquet')
+            # Добавляем title embeddings в interaction features
+            embedding_cols = [col for col in df.columns if col.endswith('_embedding') or col.endswith('_embedding_list')]
+            if embedding_cols:
+                # Добавляем эмбеддинги в inter_df
+                for col in embedding_cols:
+                    inter_df[col] = df[col].apply(lambda x: torch.tensor(x, dtype=torch.float32) if isinstance(x, (list, np.ndarray)) else x)
+                logger.info(f"Added {len(embedding_cols)} embedding features: {embedding_cols}")
+            else:
+                logger.warning("No embedding features found after preprocessing!")
 
         else:  # lastfm
             inter_df = df[['user_id', 'artist_id', 'timestamp', 'plays']].copy()
-            # inter_df = df[['user_id', 'artist_id', 'plays']].copy()
             inter_df = inter_df.rename(columns={
                 'artist_id': 'item_id',
                 'plays': 'rating'
@@ -407,33 +497,54 @@ def run_experiment(
             header_types = [
                 'user_id:token',
                 'item_id:token',
-                'item_title:token_seq', # Текстовое поле (название товара)
                 'rating:float',
                 'timestamp:float'  # Убеждаемся, что timestamp включен
             ]
+            
+            # Add title embedding fields if present
+            if dataset_type == 'rutube' and embedding_cols:
+                header_types.extend([f'{col}:float' for col in embedding_cols])
+            
             # Записываем заголовок и данные
             f.write('\t'.join(header_types) + '\n')
             inter_df.to_csv(f, sep='\t', index=False, header=False)
+            logger.info(f"Saved interaction file with headers: {header_types}")
         
-         # Обновляем конфигурацию
+        # Обновляем конфигурацию
         config_dict = {
             'data_path': output_dir,
             'checkpoint_dir': f'./ckpts/saved_{experiment_name}',
             'save_dataset': True,
             'load_col': {
-                'inter': ['user_id', 'item_id', 'title', 'rating', 'timestamp']  # Явно указываем все необходимые поля
+                'inter': ['user_id', 'item_id', 'rating', 'timestamp'] + (embedding_cols if dataset_type == 'rutube' and embedding_cols else [])
             },
-           'eval_args': {
+            'eval_args': {
                 'split': {'RS': [0.8, 0.1, 0.1]},
                 'order': 'TO',
                 'group_by': 'user',
                 'mode': 'full'
             },
-            'TEXT_FIELD': 'title',  # Указываем, что это текстовая фича
             'MAX_ITEM_LIST_LENGTH': 50,
             'ITEM_LIST_LENGTH_FIELD': 'item_length',
             'LIST_SUFFIX': '_list',
-            'max_seq_length': 50
+            'max_seq_length': 50,
+            'gpu_id': 1,
+            'use_gpu': True,
+            'device': 'cuda:1',
+            'cuda_id': 1,
+            'pytorch_gpu_id': 1,
+            
+            # Add text feature configuration
+            'feature_fusion': True,  # Enable feature fusion in BERT4Rec
+            'numerical_features': embedding_cols if dataset_type == 'rutube' and embedding_cols else [],
+            'embedding_size': 384,  # Match BERT embedding size
+            'numerical_projection_dropout': 0.1,
+            
+            # Add data configuration for embeddings
+            'data': {
+                'numerical_features': embedding_cols if dataset_type == 'rutube' and embedding_cols else [],
+                'token_features': []  # Add categorical features if needed
+            }
         }
 
         # Генерируем конфиг и запускаем обучение
@@ -444,7 +555,14 @@ def run_experiment(
             experiment_name=experiment_name,
             dataset_type=dataset_type
         )
+        
+        config.update(config_dict)
+        
         print(f"CONFIG DICT = {config_dict}")
+        print(f"Using GPU ID: {config_dict['gpu_id']}")
+        print(f"Embedding columns: {embedding_cols if dataset_type == 'rutube' and embedding_cols else []}")
+        print(f"Interaction features: {inter_df.columns.tolist()}")
+        
         init_seed(42, True)
         result = run_recbole(
             model=model_params['model'],

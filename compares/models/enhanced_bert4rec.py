@@ -1,197 +1,170 @@
-# import torch
-# import torch.nn as nn
-# from recbole.model.sequential_recommender import BERT4Rec
-# from typing import Dict, Optional
-
-# class EnhancedBERT4Rec(BERT4Rec):
-#     """Расширенная версия BERT4Rec с поддержкой дополнительных признаков"""
-    
-#     def __init__(self, config, dataset):
-#         super().__init__(config, dataset)
-        
-#         # Получаем конфигурацию признаков
-#         self.numerical_features = config['data'].get('numerical_features', [])
-#         self.categorical_features = config['data'].get('token_features', [])
-        
-#         # Размерности для разных типов признаков
-#         self.hidden_size = config['hidden_size']
-#         self.num_numerical = len(self.numerical_features)
-        
-#         # Создаем слои для обработки числовых признаков
-#         if self.num_numerical > 0:
-#             self.numerical_projection = nn.Sequential(
-#                 nn.Linear(self.num_numerical, self.hidden_size),
-#                 nn.ReLU(),
-#                 nn.Dropout(config['hidden_dropout_prob'])
-#             )
-            
-#         # Создаем эмбеддинги для категориальных признаков (если они используются)
-#         if self.categorical_features:
-#             self.categorical_embeddings = nn.ModuleDict({
-#                 feature: nn.Embedding(dataset.num_features[feature], self.hidden_size)
-#                 for feature in self.categorical_features
-#             })
-            
-#         # Слой для объединения всех признаков
-#         self.feature_fusion = nn.Linear(self.hidden_size * 2, self.hidden_size)
-        
-#     def forward(self, item_seq, **kwargs):
-#         """
-#         Args:
-#             item_seq: базовая последовательность (тензор)
-#             **kwargs: дополнительные признаки (например, числовые или категориальные), передаваемые как именованные аргументы
-#         """
-#         # Получаем базовые эмбеддинги последовательности от родительского класса
-#         seq_output = super().forward(item_seq)
-        
-#         # Обрабатываем числовые признаки, если они переданы через kwargs
-#         if self.num_numerical > 0 and all(feature in kwargs for feature in self.numerical_features):
-#             numerical_features = torch.stack(
-#                 [kwargs[feature] for feature in self.numerical_features], dim=-1
-#             )
-#             numerical_emb = self.numerical_projection(numerical_features)
-#             seq_output = self.feature_fusion(torch.cat([seq_output, numerical_emb], dim=-1))
-            
-#         # Обработка категориальных признаков, если они переданы через kwargs
-#         if self.categorical_features and all(feature in kwargs for feature in self.categorical_features):
-#             categorical_emb = torch.zeros_like(seq_output)
-#             for feature in self.categorical_features:
-#                 feature_emb = self.categorical_embeddings[feature](kwargs[feature])
-#                 categorical_emb = categorical_emb + feature_emb
-#             seq_output = self.feature_fusion(torch.cat([seq_output, categorical_emb], dim=-1))
-        
-#         return seq_output
-
-#     def _get_mapped_field(self, feature):
-#         """Преобразует имя признака в соответствующее поле RecBole"""
-#         field_mapping = {
-#             'total_watchtime': 'rating',
-#             'timestamp': 'timestamp',
-#             'rutube_video_id': 'item_id',
-#             'viewer_uid': 'user_id',
-#             'plays': 'rating'
-#             # Добавьте другие маппинги при необходимости
-#         }
-#         return field_mapping.get(feature, feature)
-
-#     def calculate_loss(self, interaction):
-#         item_seq = interaction[self.ITEM_SEQ]  # [batch, seq_len]
-#         item_seq_len = interaction[self.ITEM_SEQ_LEN]
-#         item_seq = self.reconstruct_test_data(item_seq, item_seq_len)
-        
-#         seq_output = self.forward(item_seq)  # [batch, seq_len, hidden_size]
-        
-#         final_hidden = self.gather_indexes(seq_output, item_seq_len)  # [batch, hidden_size]
-        
-#         target_item = interaction[self.ITEM_ID]
-#         # Применяем squeeze(1) только если tensor имеет более одной размерности
-#         if target_item.dim() > 1:
-#             target_item = target_item.squeeze(1)  # [batch]
-        
-#         logits = torch.matmul(final_hidden, self.item_embedding.weight[:self.n_items].transpose(0, 1))  # [batch, n_items]
-        
-#         loss_fct = nn.CrossEntropyLoss()
-#         loss = loss_fct(logits, target_item)
-#         return loss
-
 import torch
 import torch.nn as nn
 from recbole.model.sequential_recommender import BERT4Rec
-from typing import Dict
 
 class EnhancedBERT4Rec(BERT4Rec):
-    """Расширенная версия BERT4Rec с поддержкой текстовых фич и других признаков"""
-
+    """Расширенная версия BERT4Rec с поддержкой эмбеддингов заголовков, категориальных и числовых признаков"""
+    
     def __init__(self, config, dataset):
         super().__init__(config, dataset)
-
-        # Конфигурация признаков
+        
+        # Получаем конфигурацию признаков
         self.numerical_features = config['data'].get('numerical_features', [])
         self.categorical_features = config['data'].get('token_features', [])
-        self.text_features = config['data'].get('text_features', [])  # Добавляем текстовые фичи
-
-        # Размерности
-        self.hidden_size = config['hidden_size']
-        self.num_numerical = len(self.numerical_features)
-
-        # Эмбеддинги для item_title (если текстовая фича есть)
-        if 'title' in self.text_features:
-            self.text_embedding = nn.Embedding(
-                num_embeddings=dataset.num_features['item_title'], 
-                embedding_dim=self.hidden_size
-            )
-
-        # Слои для числовых признаков
-        if self.num_numerical > 0:
-            self.numerical_projection = nn.Sequential(
-                nn.Linear(self.num_numerical, self.hidden_size),
-                nn.ReLU(),
-                nn.Dropout(config['hidden_dropout_prob'])
-            )
-
-        # Эмбеддинги для категориальных признаков
+        
+        # Размерность эмбеддингов BERT
+        self.embedding_size = config.get('embedding_size', 384)
+        
+        # Проекция для эмбеддингов заголовков
+        self.title_projection = nn.Linear(self.embedding_size, self.hidden_size)
+        
+        # Создаем проекции для числовых признаков
+        self.numerical_projections = nn.ModuleDict({
+            field: nn.Linear(1, self.hidden_size)  # Каждый числовой признак проецируется в hidden_size
+            for field in self.numerical_features
+            if not field.endswith('_embedding')
+        })
+        
+        # Создаем эмбеддинги для категориальных признаков
         if self.categorical_features:
             self.categorical_embeddings = nn.ModuleDict({
                 feature: nn.Embedding(dataset.num_features[feature], self.hidden_size)
                 for feature in self.categorical_features
             })
-
-        # Слой для объединения всех признаков
-        self.feature_fusion = nn.Linear(self.hidden_size * 3, self.hidden_size)  # item_id, item_title, доп фичи
-
-    def forward(self, item_seq, item_title_seq=None, **kwargs):
+        
+        # Слои нормализации
+        self.title_norm = nn.LayerNorm(self.hidden_size)
+        self.numerical_norm = nn.LayerNorm(self.hidden_size)
+        self.categorical_norm = nn.LayerNorm(self.hidden_size)
+        
+        # Dropout
+        self.dropout = nn.Dropout(config.get('hidden_dropout_prob', 0.1))
+        
+        # Финальный слой объединения (базовая последовательность + все признаки)
+        num_features = (
+            1 +  # базовая последовательность
+            bool(self.numerical_features) +  # числовые признаки
+            bool(self.categorical_features)  # категориальные признаки
+        )
+        self.feature_fusion = nn.Linear(self.hidden_size * num_features, self.hidden_size)
+        
+    def forward(self, item_seq, interaction=None):
         """
         Args:
-            item_seq: последовательность item_id
-            item_title_seq: последовательность item_title (если есть)
-            **kwargs: доп. признаки (числовые, категориальные)
+            item_seq: базовая последовательность (тензор)
+            interaction: полный объект interaction с дополнительными признаками
         """
-        # Базовые эмбеддинги item_id через родительский forward
-        seq_output = super().forward(item_seq)
-
-        # Эмбеддинги item_title, если они переданы
-        if item_title_seq is not None:
-            title_emb = self.text_embedding(item_title_seq)
-            seq_output = torch.cat([seq_output, title_emb], dim=-1)
-
-        # Числовые признаки
-        if self.num_numerical > 0 and all(feature in kwargs for feature in self.numerical_features):
-            numerical_features = torch.stack(
-                [kwargs[feature] for feature in self.numerical_features], dim=-1
-            )
-            numerical_emb = self.numerical_projection(numerical_features)
-            seq_output = torch.cat([seq_output, numerical_emb], dim=-1)
-
-        # Категориальные признаки
-        if self.categorical_features and all(feature in kwargs for feature in self.categorical_features):
-            categorical_emb = torch.zeros_like(seq_output)
-            for feature in self.categorical_features:
-                feature_emb = self.categorical_embeddings[feature](kwargs[feature])
-                categorical_emb += feature_emb
-            seq_output = torch.cat([seq_output, categorical_emb], dim=-1)
-
-        # Объединяем и проецируем в скрытое пространство
-        seq_output = self.feature_fusion(seq_output)
-        return seq_output
+        # Получаем базовые эмбеддинги последовательности
+        seq_output = super().forward(item_seq)  # [batch_size, seq_len, hidden_size]
+        all_features = [seq_output]
+        
+        if interaction is not None:
+            # Обрабатываем эмбеддинги заголовков
+            if 'detailed_view_embedding' in interaction:
+                title_emb = interaction['detailed_view_embedding']  # [batch_size, embedding_size]
+                if not isinstance(title_emb, torch.Tensor):
+                    title_emb = torch.tensor(title_emb, dtype=torch.float32, device=seq_output.device)
+                
+                # Проецируем эмбеддинги заголовков
+                title_proj = self.title_projection(title_emb)  # [batch_size, hidden_size]
+                title_proj = self.title_norm(title_proj)
+                
+                # Расширяем до размера последовательности
+                title_proj = title_proj.unsqueeze(1).expand(-1, seq_output.size(1), -1)  # [batch_size, seq_len, hidden_size]
+                all_features.append(title_proj)
+            
+            # Обрабатываем числовые признаки
+            if self.numerical_features:
+                numerical_tensors = []
+                for field in self.numerical_features:
+                    if field in interaction and not field.endswith('_embedding'):
+                        num_feature = interaction[field].unsqueeze(-1)  # [batch_size, 1]
+                        if not isinstance(num_feature, torch.Tensor):
+                            num_feature = torch.tensor(num_feature, dtype=torch.float32, device=seq_output.device)
+                        projected_num = self.numerical_projections[field](num_feature)  # [batch_size, hidden_size]
+                        numerical_tensors.append(projected_num)
+                
+                if numerical_tensors:
+                    numerical_output = torch.stack(numerical_tensors, dim=1)  # [batch_size, num_features, hidden_size]
+                    numerical_output = self.numerical_norm(numerical_output.mean(dim=1))  # [batch_size, hidden_size]
+                    numerical_output = numerical_output.unsqueeze(1).expand(-1, seq_output.size(1), -1)  # [batch_size, seq_len, hidden_size]
+                    all_features.append(numerical_output)
+            
+            # Обрабатываем категориальные признаки
+            if self.categorical_features:
+                categorical_tensors = []
+                for field in self.categorical_features:
+                    if field in interaction:
+                        cat_feature = interaction[field]
+                        if not isinstance(cat_feature, torch.Tensor):
+                            cat_feature = torch.tensor(cat_feature, dtype=torch.long, device=seq_output.device)
+                        cat_embedding = self.categorical_embeddings[field](cat_feature)  # [batch_size, hidden_size]
+                        categorical_tensors.append(cat_embedding)
+                
+                if categorical_tensors:
+                    categorical_output = torch.stack(categorical_tensors, dim=1)  # [batch_size, num_features, hidden_size]
+                    categorical_output = self.categorical_norm(categorical_output.mean(dim=1))  # [batch_size, hidden_size]
+                    categorical_output = categorical_output.unsqueeze(1).expand(-1, seq_output.size(1), -1)  # [batch_size, seq_len, hidden_size]
+                    all_features.append(categorical_output)
+        
+        # Объединяем все признаки
+        combined = torch.cat(all_features, dim=-1)  # [batch_size, seq_len, num_features * hidden_size]
+        combined = self.dropout(combined)
+        output = self.feature_fusion(combined)  # [batch_size, seq_len, hidden_size]
+        
+        return output
 
     def calculate_loss(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
+        pos_items = interaction[self.POS_ITEM_ID]
+        
+        # Восстанавливаем тестовые данные
         item_seq = self.reconstruct_test_data(item_seq, item_seq_len)
-
-        # Добавляем item_title в interaction, если есть
-        item_title_seq = interaction.get('item_title_seq', None)
-
-        seq_output = self.forward(item_seq, item_title_seq=item_title_seq)
-
-        final_hidden = self.gather_indexes(seq_output, item_seq_len)
-
-        target_item = interaction[self.ITEM_ID]
-        if target_item.dim() > 1:
-            target_item = target_item.squeeze(1)
-
-        logits = torch.matmul(final_hidden, self.item_embedding.weight[:self.n_items].transpose(0, 1))
-
-        loss_fct = nn.CrossEntropyLoss()
-        loss = loss_fct(logits, target_item)
+        
+        # Получаем выход модели, передавая полный interaction
+        seq_output = self.forward(item_seq, interaction)
+        
+        # Получаем последний hidden state
+        seq_output = self.gather_indexes(seq_output, item_seq_len - 1)
+        
+        test_item_emb = self.item_embedding.weight[:self.n_items]
+        logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
+        
+        loss = self.loss_fct(logits, pos_items)
         return loss
+
+    def predict(self, interaction):
+        item_seq = interaction[self.ITEM_SEQ]
+        item_seq_len = interaction[self.ITEM_SEQ_LEN]
+        test_item = interaction[self.ITEM_ID]
+        
+        # Восстанавливаем тестовые данные
+        item_seq = self.reconstruct_test_data(item_seq, item_seq_len)
+        
+        # Получаем выход модели, передавая полный interaction
+        seq_output = self.forward(item_seq, interaction)
+        
+        # Получаем последний hidden state
+        seq_output = self.gather_indexes(seq_output, item_seq_len - 1)
+        
+        test_item_emb = self.item_embedding(test_item)
+        scores = torch.mul(seq_output, test_item_emb).sum(dim=1)
+        return scores
+
+    def full_sort_predict(self, interaction):
+        item_seq = interaction[self.ITEM_SEQ]
+        item_seq_len = interaction[self.ITEM_SEQ_LEN]
+        
+        # Восстанавливаем тестовые данные
+        item_seq = self.reconstruct_test_data(item_seq, item_seq_len)
+        
+        # Получаем выход модели, передавая полный interaction
+        seq_output = self.forward(item_seq, interaction)
+        
+        # Получаем последний hidden state
+        seq_output = self.gather_indexes(seq_output, item_seq_len - 1)
+        
+        test_items_emb = self.item_embedding.weight[:self.n_items]
+        scores = torch.matmul(seq_output, test_items_emb.transpose(0, 1))
+        return scores
