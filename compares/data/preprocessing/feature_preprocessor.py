@@ -44,16 +44,25 @@ class FeaturePreprocessor:
         
         for field in text_fields:
             if field in df.columns:
-                self.logger.info(f"_process_text_features: field: {field}")
-                texts = df[field].fillna('').tolist()
+                self.logger.info(f"Processing text field: {field}")
+                self.logger.info(f"Model type: {model_type}")
                 
+                texts = df[field].fillna('').tolist()
+                self.logger.info(f"Number of texts to process: {len(texts)}")
+                
+                # Получаем эмбеддинги
                 embeddings = self.text_model.encode(texts, show_progress_bar=False)
                 embeddings = torch.tensor(embeddings, device=self.device)
+                self.logger.info(f"Embeddings shape: {embeddings.shape}")
                 
-                df_processed[f'{field}_embedding'] = embeddings.cpu().numpy()
+                # Сохраняем эмбеддинги
+                emb_field = f'{field}_embedding'
+                df_processed[emb_field] = embeddings.cpu().numpy()
+                self.logger.info(f"Saved embeddings to field: {emb_field}")
                 
                 # Создаем последовательности только для BERT4Rec
                 if model_type == 'bert4rec':
+                    self.logger.info("Creating sequences for BERT4Rec")
                     if 'viewer_uid' not in df.columns:
                         self.logger.warning("Field viewer_uid not found in DataFrame. Skipping sequence creation.")
                         continue
@@ -64,6 +73,8 @@ class FeaturePreprocessor:
                         if user_id not in user_sequences:
                             user_sequences[user_id] = []
                         user_sequences[user_id].append(emb.tolist())
+                    
+                    self.logger.info(f"Created sequences for {len(user_sequences)} users")
                     
                     # Создаем словарь с готовыми последовательностями для каждого пользователя
                     processed_sequences = {}
@@ -81,7 +92,10 @@ class FeaturePreprocessor:
                     for user_id in df['viewer_uid']:
                         sequence_embeddings.append(processed_sequences[user_id])
                     
-                    df_processed[f'{field}_embedding_list'] = sequence_embeddings
+                    list_field = f'{field}_embedding_list'
+                    df_processed[list_field] = sequence_embeddings
+                    self.logger.info(f"Saved sequence embeddings to field: {list_field}")
+                    self.logger.info(f"Sequence embeddings shape: {len(sequence_embeddings)}x{len(sequence_embeddings[0])}x{len(sequence_embeddings[0][0])}")
                 
         return df_processed
     

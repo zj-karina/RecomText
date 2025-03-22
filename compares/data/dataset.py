@@ -38,6 +38,8 @@ class EnhancedSequentialDataset(SequentialDataset):
         super()._prepare_data_augmentation()
         
         text_fields = self.config['features'].get('text_fields', [])
+        logger.info(f"Processing text fields: {text_fields}")
+        logger.info(f"Model type: {self.model_type}")
         
         # Обрабатываем текстовые поля
         for text_field in text_fields:
@@ -63,6 +65,11 @@ class EnhancedSequentialDataset(SequentialDataset):
                 
                 # Объединяем все эмбеддинги
                 all_embeddings = np.vstack(all_embeddings)
+                logger.info(f"Generated embeddings shape: {all_embeddings.shape}")
+                
+                # Проверяем размерность эмбеддингов
+                if all_embeddings.shape[1] != self.embedding_dim:
+                    raise ValueError(f"Expected embedding dimension {self.embedding_dim}, got {all_embeddings.shape[1]}")
                 
                 # Создаем маппинг текст -> эмбеддинг
                 text_to_embedding = {text: emb for text, emb in zip(unique_texts, all_embeddings)}
@@ -71,17 +78,29 @@ class EnhancedSequentialDataset(SequentialDataset):
                 sequence_embeddings = np.array([
                     text_to_embedding[text] for text in self.inter_feat[text_field]
                 ])
+                logger.info(f"Sequence embeddings shape: {sequence_embeddings.shape}")
                 
+                # Сохраняем эмбеддинги
                 emb_field = f'{text_field}_embedding'
                 self.inter_feat[emb_field] = torch.FloatTensor(sequence_embeddings)
+                logger.info(f"Saved embeddings to field: {emb_field}")
                 
                 # Создаем последовательности эмбеддингов только для BERT4Rec
                 if self.model_type == 'bert4rec':
+                    logger.info("Creating sequence embeddings for BERT4Rec")
                     list_field = f'{emb_field}_list'
-                    self.inter_feat[list_field] = torch.FloatTensor(
+                    
+                    # Проверяем размерность последовательности
+                    if sequence_embeddings.shape[0] % self.max_item_list_len != 0:
+                        raise ValueError(f"Number of embeddings ({sequence_embeddings.shape[0]}) must be divisible by max_item_list_len ({self.max_item_list_len})")
+                    
+                    # Создаем последовательности
+                    sequence_tensor = torch.FloatTensor(
                         sequence_embeddings.reshape(-1, self.max_item_list_len, self.embedding_dim)
                     )
-                    logger.info(f"Created embeddings tensor of shape: {self.inter_feat[list_field].shape}")
+                    self.inter_feat[list_field] = sequence_tensor
+                    logger.info(f"Created sequence tensor of shape: {sequence_tensor.shape}")
+                    logger.info(f"Saved sequence embeddings to field: {list_field}")
                 
     def _restore_saved_dataset(self, saved_dataset):
         """Восстанавливаем сохраненный датасет"""
