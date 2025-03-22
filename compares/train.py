@@ -464,6 +464,8 @@ def run_experiment(
                 'rutube_video_id': 'item_id',
                 'total_watchtime': 'rating'
             })
+            df_videos = pd.read_parquet("~/RecomText/data/video_info.parquet")
+            df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
             # Добавляем title embeddings в interaction features
             embedding_cols = [col for col in df.columns if col.endswith('_embedding') or col.endswith('_embedding_list')]
             if embedding_cols:
