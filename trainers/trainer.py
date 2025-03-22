@@ -38,8 +38,6 @@ class Trainer:
             
             # Обучение
             train_metrics = self.train_epoch()
-            if epoch == 0:
-                self._save_checkpoint(epoch)
             print("\nTraining metrics:")
             self._print_metrics(train_metrics)
             
@@ -93,19 +91,24 @@ class Trainer:
         df_videos = pd.read_parquet("./data/video_info.parquet")
         df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
 
+        try:
+           from indexer import main as update_index
+           index_config = self.config.copy()
+           index_config['inference']['model_path'] = "temp_current_model"
+           # Сохраняем текущее состояние модели во временную директорию
+           os.makedirs("temp_current_model", exist_ok=True)
+           self.model.save_pretrained("temp_current_model")
+           # Обновляем индекс
+           update_index(config=index_config)
+           print("FAISS index updated with current model weights")
+        except Exception as e:
+           print(f"Error updating index: {str(e)}")
+           return None
+
         # Проверка и обновление индекса
         index_path = self.config['inference']['index_path']
         ids_path = self.config['inference']['ids_path']
         embeddings_path = self.config['inference']['embeddings_path']
-        
-        if not all(os.path.exists(p) for p in [index_path, ids_path, embeddings_path]):
-            print("\nIndex files not found, creating new index...")
-            try:
-                from indexer import main as create_index
-                create_index(config=self.config)
-            except Exception as e:
-                print(f"Error creating index: {str(e)}")
-                return None
 
         # Загрузка индекса и данных
         try:
@@ -117,38 +120,38 @@ class Trainer:
             return None
         
         # Загрузка демографических данных
-        try:
-            demographic_data = pd.read_parquet('./data/demographic_data.parquet')
-            demographic_features = ['age_group', 'sex', 'region']
+        # try:
+        #     demographic_data = pd.read_parquet('./data/demographic_data.parquet')
+        #     demographic_features = ['age_group', 'sex', 'region']
             
-            # Создаем центроиды для каждой демографической группы
-            demographic_centroids = {}
-            for feature in demographic_features:
-                demographic_centroids[feature] = {}
-                for group in demographic_data[feature].unique():
-                    # Получаем пользователей из этой группы
-                    group_users = demographic_data[demographic_data[feature] == group]['viewer_uid'].values
+        #     # Создаем центроиды для каждой демографической группы
+        #     demographic_centroids = {}
+        #     for feature in demographic_features:
+        #         demographic_centroids[feature] = {}
+        #         for group in demographic_data[feature].unique():
+        #             # Получаем пользователей из этой группы
+        #             group_users = demographic_data[demographic_data[feature] == group]['viewer_uid'].values
                     
-                    # Получаем их эмбеддинги из истории просмотров
-                    group_embeddings = []
-                    for user_id in group_users:
-                        if user_id in textual_history['viewer_uid'].values:
-                            user_idx = textual_history[textual_history['viewer_uid'] == user_id].index[0]
-                            if user_idx < len(item_embeddings_array):
-                                group_embeddings.append(item_embeddings_array[user_idx])
+        #             # Получаем их эмбеддинги из истории просмотров
+        #             group_embeddings = []
+        #             for user_id in group_users:
+        #                 if user_id in textual_history['viewer_uid'].values:
+        #                     user_idx = textual_history[textual_history['viewer_uid'] == user_id].index[0]
+        #                     if user_idx < len(item_embeddings_array):
+        #                         group_embeddings.append(item_embeddings_array[user_idx])
                     
-                    if group_embeddings:
-                        # Вычисляем центроид группы
-                        group_centroid = np.mean(group_embeddings, axis=0)
-                        demographic_centroids[feature][group] = torch.tensor(
-                            group_centroid, 
-                            device=self.device
-                        )
+        #             if group_embeddings:
+        #                 # Вычисляем центроид группы
+        #                 group_centroid = np.mean(group_embeddings, axis=0)
+        #                 demographic_centroids[feature][group] = torch.tensor(
+        #                     group_centroid, 
+        #                     device=self.device
+        #                 )
             
-            print(f"Loaded demographic data with features: {demographic_features}")
-        except Exception as e:
-            print(f"Warning: Could not load demographic data: {str(e)}")
-            demographic_centroids = None
+        #     print(f"Loaded demographic data with features: {demographic_features}")
+        # except Exception as e:
+        #     print(f"Warning: Could not load demographic data: {str(e)}")
+        #     demographic_centroids = None
         
         # Инициализация метрик
         sim_threshold_precision = self.config['metrics'].get('sim_threshold_precision', 0.07)
@@ -195,17 +198,17 @@ class Trainer:
                         df_videos_map,
                         item_embeddings_array,
                         metrics_calculator,
-                        top_k,
-                        demographic_data,
-                        demographic_features,
-                        demographic_centroids
+                        top_k
+                        # demographic_data,
+                        # demographic_features,
+                        # demographic_centroids
                     )
                     self._update_metrics(metrics_accum, user_metrics)
                     num_users += 1
 
         return self._compile_metrics(total_loss, total_contrastive_loss, total_recommendation_loss, metrics_accum, num_users)
 
-    def _process_user(self, user_emb, target_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings, metrics_calculator, top_k, demographic_data, demographic_features, demographic_centroids):
+    def _process_user(self, user_emb, item_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings_array, metrics_calculator, top_k):
         """Обработка одного пользователя для расчета метрик"""
         # Поиск рекомендаций
         user_emb_np = user_emb.cpu().numpy().astype('float32')
@@ -230,16 +233,16 @@ class Trainer:
             rec_items = []
 
         # Демографические данные
-        user_demographics = {}
-        if demographic_data is not None:
-            orig_user_id = self.val_loader.dataset.reverse_user_id_map.get(user_id.item())
+        # user_demographics = {}
+        # if demographic_data is not None:
+        #     orig_user_id = self.val_loader.dataset.reverse_user_id_map.get(user_id.item())
 
-            # Фильтруем нужного пользователя по его ID
-            user_row = demographic_data[demographic_data['viewer_uid'] == orig_user_id]
+        #     # Фильтруем нужного пользователя по его ID
+        #     user_row = demographic_data[demographic_data['viewer_uid'] == orig_user_id]
 
-            if not user_row.empty:  # Проверяем, есть ли данные
-                user_row = user_row.iloc[0]
-                user_demographics = {feature: user_row[feature] for feature in demographic_features}  # Заполняем user_demo сразу
+        #     if not user_row.empty:  # Проверяем, есть ли данные
+        #         user_row = user_row.iloc[0]
+        #         user_demographics = {feature: user_row[feature] for feature in demographic_features}  # Заполняем user_demo сразу
 
         # Целевой товар
         target_id = items_ids[0].item()
@@ -248,13 +251,13 @@ class Trainer:
         target_items = items_ids.cpu().tolist()
 
         user_metrics = metrics_calculator.compute_metrics(
-            target_emb,
-            rec_embeddings,
+            item_emb,  # Это эмбеддинг товара, который пользователь уже просмотрел
+            rec_embeddings,  # Это эмбеддинги кандидатов на рекомендацию
             target_category,
             rec_categories,
-            top_k,
-            user_demographics,
-            demographic_centroids
+            top_k
+            # user_demographics,
+            # demographic_centroids
         )
         for k in [5, 10, 20]:
             user_metrics.update(metrics_calculator.compute_ranking_metrics(target_items, rec_items, k))
