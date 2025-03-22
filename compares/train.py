@@ -32,10 +32,22 @@ from recbole.utils.case_study import full_sort_scores
 from sklearn.preprocessing import normalize
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
+from logging import getLogger
+from recbole.utils import init_logger, init_seed
+from recbole.trainer import Trainer
+from recbole.config import Config
+from recbole.data import create_dataset, data_preparation
+from models.enhanced_sasrec import EnhancedSASRec
+from models.enhanced_bert4rec import EnhancedBERT4Rec
 
 DATASET_PREPROCESSORS = {
     'rutube': RutubePreprocessor,
     'lastfm': LastFMPreprocessor
+}
+
+MODEL_MAPPING = {
+    'SASRec': EnhancedSASRec,
+    'BERT4Rec': EnhancedBERT4Rec
 }
 
 def generate_config(
@@ -53,24 +65,39 @@ def generate_config(
         'base_config.yaml'
     )
     with open(base_config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    
+         config = yaml.safe_load(f)
+
     # Получаем конфигурацию для конкретного датасета
     dataset_features = features[dataset_type]
-    
-    # Обновляем load_col из features
+
+    # Обновляем load_col с правильными именами полей
+    field_mapping = dataset_features['field_mapping']
     config['data']['load_col'] = {
-        'inter': dataset_features['features']['interaction_features'],
-        'item': dataset_features['features'].get('item_features', []),
-        'user': dataset_features['features'].get('user_features', [])
+        'inter': [
+            field_mapping['USER_ID_FIELD'],
+            field_mapping['ITEM_ID_FIELD'],
+            field_mapping['RATING_FIELD'],
+            field_mapping['TIME_FIELD']
+        ]
     }
-    
-    # Обновляем numerical_features
-    config['data']['numerical_features'] = dataset_features['features']['numerical_features']
-    
+
+    # Маппим имена полей в формат RecBole
+    recbole_field_mapping = {
+        field_mapping['USER_ID_FIELD']: 'user_id',
+        field_mapping['ITEM_ID_FIELD']: 'item_id',
+        field_mapping['RATING_FIELD']: 'rating',
+        field_mapping['TIME_FIELD']: 'timestamp'
+    }
+
+    # Обновляем numerical_features с учетом маппинга
+    numerical_features = dataset_features['features']['numerical_features']
+    config['data']['numerical_features'] = [
+        recbole_field_mapping.get(f, f) for f in numerical_features
+    ]
+
     # Добавляем маппинг полей
     config['data'].update(dataset_features['field_mapping'])
-    
+
     # Проверяем наличие текстовых полей
     if 'TEXT_FIELDS' in dataset_features['field_mapping']:
         text_fields = dataset_features['field_mapping']['TEXT_FIELDS']
@@ -78,23 +105,20 @@ def generate_config(
         for field in text_fields:
             emb_features = [f'{field}_emb_{i}' for i in range(384)]  # Размерность BERT
             config['data']['numerical_features'].extend(emb_features)
-    
+
     # Проверяем наличие категориальных признаков
     if 'categorical_features' in dataset_features['features']:
         cat_fields = dataset_features['features']['categorical_features']
         config['data']['token_features'] = cat_fields
-    
-    # Добавляем параметры модели
+         # Добавляем параметры модели
     config.update(model_params)
-    
-    # Добавляем пути к данным и чекпоинтам
+     # Добавляем пути к данным и чекпоинтам
     config['data_path'] = output_dir
     config['checkpoint_dir'] = f'./ckpts/saved_{experiment_name}'
 
     # Сохраняем итоговый конфиг
     os.makedirs(f"{output_dir}/{experiment_name}", exist_ok=True)
     config_path = f'{output_dir}/{experiment_name}/{experiment_name}.yaml'
-    
     with open(config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False)
 
@@ -232,6 +256,7 @@ def compute_metrics_for_batch(preprocessor, dataset_type, batch_scores, batch_it
         ccr = cross_category_relevance_batch(preprocessor, pred_items, ground_truth_items, item_embeddings, category_info, device, k=k)
         ndcg = contextual_ndcg_batch(preprocessor, pred_items, ground_truth_items, item_embeddings, category_info, device, sim_threshold_ndcg)
 
+
     return sp, ccr, ndcg
 
 def semantic_precision_at_k_batch(pred_items, ground_truth_items, item_embeddings, device, sim_threshold_precision):
@@ -245,6 +270,7 @@ def semantic_precision_at_k_batch(pred_items, ground_truth_items, item_embedding
     gt_vectors = item_embeddings[ground_truth_items]
     rec_vectors = item_embeddings[pred_items]
     similarity_matrix = cosine_similarity_faiss(gt_vectors, rec_vectors)
+
 
     # Подсчет успешных рекомендаций
     successful_recs = (similarity_matrix >= sim_threshold_precision).sum(dim=1)
@@ -329,8 +355,7 @@ def get_latest_checkpoint(checkpoint_dir: str) -> str:
     checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "*.pth"))
     if not checkpoint_files:
         raise FileNotFoundError(f"No checkpoint files found in {checkpoint_dir}")
-    
-    latest_checkpoint = max(checkpoint_files, key=os.path.getmtime) # Выбираем самый последний по дате изменения
+    latest_checkpoint = max(checkpoint_files, key=os.path.getmtime)  # Выбираем самый последний по дате изменения
     return latest_checkpoint
 
 
@@ -352,17 +377,19 @@ def run_experiment(
         dataset_preprocessor = DATASET_PREPROCESSORS.get(dataset_type)
         if dataset_preprocessor is None:
             raise ValueError(f"Unknown dataset type: {dataset_type}")
-        
+
         if dataset_type == 'rutube':
             df['rutube_video_id'] = df['rutube_video_id'].apply(lambda x: x.strip('video_'))
-        
+        else:
+            df = df.sample(1759616)
+
         # Загружаем конфигурацию признаков
         with open(f'configs/feature_configs/{feature_config}.yaml', 'r') as f:
             feature_config_dict = yaml.safe_load(f)
-        
+
         # Инициализируем препроцессор датасета
         preprocessor = dataset_preprocessor()
-        
+
         # Предобработка данных
         df = preprocessor.preprocess(df, feature_config_dict[dataset_type])
 
@@ -384,17 +411,17 @@ def run_experiment(
                 'artist_id': 'item_id',
                 'plays': 'rating'
             })
-        
+
         # Убеждаемся, что timestamp присутствует и отсортирован
         if 'timestamp' not in inter_df.columns:
             raise ValueError("timestamp field is required for sequential recommendation")
-            
+
         # Сортируем по времени
         inter_df = inter_df.sort_values('timestamp')
-        
+
         # Создаем директорию для эксперимента
         os.makedirs(f"{output_dir}/{experiment_name}", exist_ok=True)
-        
+
         # Записываем файл с заголовками, содержащими типы
         with open(f'{output_dir}/{experiment_name}/{experiment_name}.inter', 'w', encoding='utf-8') as f:
             # Определяем типы для каждого поля
@@ -429,7 +456,12 @@ def run_experiment(
             'max_seq_length': 50
         }
 
-        # Генерируем конфиг и запускаем обучение
+        # Получаем класс модели
+        model_class = MODEL_MAPPING.get(model_params['model'])
+        if model_class is None:
+            raise ValueError(f"Unknown model: {model_params['model']}")
+
+        # Создаем конфигурацию
         config, config_path = generate_config(
             features=feature_config_dict,
             model_params=model_params,
@@ -438,24 +470,47 @@ def run_experiment(
             dataset_type=dataset_type
         )
 
-        init_seed(42, True)
-        result = run_recbole(
-            model=model_params['model'],
-            dataset=experiment_name,
-            config_file_list=[config_path],
-            config_dict=config_dict
-        )
+        # Инициализируем конфигурацию
+        config.update(config_dict)
+        config = Config(model=model_class, dataset=experiment_name, config_dict=config)
+        init_seed(config['seed'], config['reproducibility'])
+
+        # Инициализируем логгер
+        init_logger(config)
+        logger = getLogger()
+        logger.info(config)
+
+        # Создаем датасет
+        dataset = create_dataset(config)
+        logger.info(dataset)
+
+        # Разделяем данные
+        train_data, valid_data, test_data = data_preparation(config, dataset)
+
+        # Инициализируем модель
+        model = model_class(config, train_data.dataset).to(config['device'])
+        logger.info(model)
+
+        # Инициализируем тренер
+        trainer = Trainer(config, model)
+
+        # Обучаем модель
+        best_valid_score, best_valid_result = trainer.fit(train_data, valid_data)
+
+        # Оцениваем на тестовых данных
+        test_result = trainer.evaluate(test_data)
+
+        logger.info('Best valid result: {}'.format(best_valid_result))
+        logger.info('Test result: {}'.format(test_result))
+
         # Запускаем кастомные метрики
         custom_metrics = evaluate_with_custom_metrics(preprocessor, config, dataset_type, df_videos_map)
         logger.info(f"Custom Metrics: {custom_metrics}")
 
-        logger.info(f"Training completed. Model saved in ./ckpts/saved_{experiment_name}")
-        return result
-        
+
     except Exception as e:
         logger.error(f"Error in experiment pipeline: {str(e)}", exc_info=True)
         raise
-
 if __name__ == "__main__":
     import argparse
 
@@ -474,14 +529,14 @@ if __name__ == "__main__":
                       help='Output directory')
     parser.add_argument('--experiment_name', type=str, required=True,
                       help='Name of the experiment')
-    
+
     args = parser.parse_args()
 
     # Загружаем параметры модели
     model_config_path = f'configs/model_configs/{args.model.lower()}.yaml'
     with open(model_config_path, 'r') as f:
         model_params = yaml.safe_load(f)
-    
+
     # Запускаем эксперимент
     result = run_experiment(
         input_file=args.input_file,
@@ -491,3 +546,8 @@ if __name__ == "__main__":
         dataset_type=args.dataset_type,
         output_dir=args.output_dir
     )
+
+    print("Experiment completed!")
+    print("Best validation results:", result['best_valid_result'])
+    print("Test results:", result['test_result'])
+    # print("Custom metrics:", result['custom_metrics'])
