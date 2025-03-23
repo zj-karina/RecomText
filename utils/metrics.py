@@ -262,62 +262,62 @@ class MetricsCalculator:
                        recommended_categories: List[str],
                        recommended_ids: List[str] = None,
                        relevant_ids: Set[str] = None,
-                       relevance_scores: Dict[str, float] = None) -> Dict[str, float]:
-                       k: int) -> Dict[str, float]: #user_demographics: Dict[str, str] = None,
+                       relevance_scores: Dict[str, float] = None,
+                       k: int = 10) -> Dict[str, float]:  #user_demographics: Dict[str, str] = None,
                        #demographic_centroids: Dict[str, Dict[str, torch.Tensor]] = None
         """
         Вычисляет все метрики для одного пользователя.
         
         Args:
-            target_embedding: целевой эмбеддинг
+            item_embedding: целевой эмбеддинг
             recommended_embeddings: эмбеддинги рекомендованных элементов
             target_category: целевая категория
             recommended_categories: категории рекомендованных элементов
-            k: количество рекомендаций для оценки
-            user_demographics: словарь с демографическими характеристиками пользователя
-            demographic_centroids: словарь центроидов для каждой демографической группы
             recommended_ids: список ID рекомендованных элементов
             relevant_ids: множество ID релевантных элементов
             relevance_scores: словарь с оценками релевантности для каждого ID
+            k: количество рекомендаций для оценки
             
         Returns:
             Dict с вычисленными метриками
         """
         metrics = {}
-        metrics = {
-            "semantic_precision@k": self.semantic_precision_at_k(
+        
+        # Семантические метрики
+        if recommended_embeddings.size(0) > 0:
+            metrics["semantic_precision@k"] = self.semantic_precision_at_k(
                 item_embedding,
                 recommended_embeddings,
                 k
-            ),
-            "cross_category_relevance": self.cross_category_relevance(
-                self.semantic_precision_at_k(item_embedding, recommended_embeddings, k),
+            )
+            
+            metrics["cross_category_relevance"] = self.cross_category_relevance(
+                metrics["semantic_precision@k"],
                 target_category,
                 recommended_categories
-            ),
-            "contextual_ndcg": self.contextual_ndcg(
+            )
+            
+            metrics["contextual_ndcg"] = self.contextual_ndcg(
                 item_embedding,
                 recommended_embeddings,
                 target_category,
                 recommended_categories
             )
-        }
+        else:
+            metrics["semantic_precision@k"] = 0.0
+            metrics["cross_category_relevance"] = 0.0
+            metrics["contextual_ndcg"] = 0.0
         
-        # Добавляем DAS если доступны демографические данные
-        # if user_demographics and demographic_centroids:
-        #     das_scores = self.demographic_alignment_score(
-        #         user_demographics,
-        #         recommended_embeddings,
-        #         demographic_centroids
-        #     )
-        #     metrics.update(das_scores)
-            
-        classic_metrics = self.compute_classic_metrics(
-            recommended_ids,
-            relevant_ids,
-            ks=[k],
-            relevance_scores=relevance_scores
-        )
-        metrics.update(classic_metrics)
+        # Классические метрики
+        if recommended_ids and relevant_ids:
+            metrics["precision@k"] = self.precision_at_k(recommended_ids, relevant_ids, k)
+            metrics["recall@k"] = self.recall_at_k(recommended_ids, relevant_ids, k)
+            metrics["ndcg@k"] = self.ndcg_at_k(recommended_ids, relevant_ids, relevance_scores, k)
+            metrics["mrr@k"] = self.mrr_at_k(recommended_ids, relevant_ids, k)
+        else:
+            metrics["precision@k"] = 0.0
+            metrics["recall@k"] = 0.0
+            metrics["ndcg@k"] = 0.0
+            metrics["mrr@k"] = 0.0
             
         return metrics

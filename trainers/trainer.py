@@ -186,8 +186,8 @@ class Trainer:
                 total_recommendation_loss += rec_loss
                 total_contrastive_loss += con_loss
 
-                # Поиск рекомендаций и расчет метрик
-                for i in range(user_embeddings.size(0))[:1]:
+                # Поиск рекомендаций и расчет метрик для всех пользователей в батче
+                for i in range(user_embeddings.size(0)):  # Убираем срез [:1]
                     user_metrics = self._process_user(
                         user_embeddings[i], 
                         items_embeddings[i], 
@@ -216,32 +216,34 @@ class Trainer:
         
         # List of recommended video IDs for metrics
         rec_categories = []
-        relevant_ids = []
+        recommended_ids = []
+        relevance_scores = {}  # Инициализируем словарь для relevance_scores
         
         if len(indices) > 0 and len(indices[0]) > 0:
             # Get recommendation embeddings
             rec_embeddings = torch.tensor(item_embeddings_array[indices[0]], device=self.device)
-            recommended_ids = video_ids[indices[0]] #check
             
             # Get metadata for recommendations
             for idx in indices[0]:
                 # Get the video ID from the FAISS index
-                faiss_video_id = str(video_ids[idx][0])
-                # recommended_ids.append(faiss_video_id)
+                faiss_video_id = int(video_ids[idx][0])
+                recommended_ids.append(str(faiss_video_id))
                 
                 # Convert to original video ID for category lookup
-                orig_video_id = self.val_loader.dataset.reverse_item_id_map.get(int(faiss_video_id))
+                orig_video_id = self.val_loader.dataset.reverse_item_id_map.get(faiss_video_id)
                 
-                relevant_ids.append(orig_video_id)
-                relevance_scores[str(item_id)] = 1.0
+                # Добавляем relevance score (по умолчанию 1.0)
+                relevance_scores[str(faiss_video_id)] = 1.0
                 
                 if orig_video_id in df_videos_map:
                     rec_categories.append(df_videos_map[orig_video_id].get('category', 'Unknown'))
                 else:
                     rec_categories.append('Unknown')
-
-        print(f"\nGT Ids: {relevant_ids}")
-        print(f"Predicted Ids: {recommended_ids}")
+        else:
+            # Если нет рекомендаций, создаем пустые данные
+            rec_embeddings = torch.zeros((0, user_emb.size(0)), device=self.device)
+            recommended_ids = []
+            rec_categories = []
         
         # Target category info
         target_id = items_ids[0].item() if len(items_ids) > 0 and items_ids[0].item() > 0 else None
@@ -250,7 +252,7 @@ class Trainer:
             orig_target_video_id = self.val_loader.dataset.reverse_item_id_map.get(target_id)
             if orig_target_video_id in df_videos_map:
                 target_category = df_videos_map[orig_target_video_id].get('category', 'Unknown')
-        
+
         # User demographic data
         # user_demographics = {}
         # if demographic_data is not None:
@@ -261,22 +263,25 @@ class Trainer:
         #         user_row = user_row.iloc[0]
         #         user_demographics = {feature: user_row[feature] for feature in demographic_features 
         #                            if feature in user_row}
+
+        # Создаем множество релевантных ID (для классических метрик)
+        # В данном случае считаем релевантными те видео, которые пользователь уже смотрел
+        relevant_ids = set([str(id) for id in items_ids.cpu().numpy() if id > 0])
         
         # Calculate metrics
-
         user_metrics = metrics_calculator.compute_metrics(
-            item_emb,  # Это эмбеддинг товара, который пользователь уже просмотрел
-            rec_embeddings,  # Это эмбеддинги кандидатов на рекомендацию
+            item_emb,
+            rec_embeddings,
             target_category,
             rec_categories,
-            top_k,
             recommended_ids,
             relevant_ids,
-            relevance_scores
+            relevance_scores,
+            k=top_k
             # user_demographics,
             # demographic_centroids
         )
-    
+
         return user_metrics
 
     def _update_metrics(self, metrics_accum, user_metrics):
