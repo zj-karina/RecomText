@@ -16,15 +16,21 @@ class MetricsCalculator:
         self.sim_threshold_ndcg = sim_threshold_ndcg
 
     def semantic_precision_at_k(self, 
-                            target_embedding: torch.Tensor,
+                            item_embedding: torch.Tensor,
                             recommended_embeddings: torch.Tensor,
                             k: int) -> float:
         """
         Вычисляет Semantic Precision@K.
+        
+        Сравнивает каждый рекомендованный эмбеддинг с эмбеддингом просмотренного товара
+        и считает долю рекомендаций, которые семантически близки к нему.
         """
+        if recommended_embeddings.shape[0] == 0:
+            return 0.0
+        
         # Вычисление косинусного сходства
         similarities = F.cosine_similarity(
-            target_embedding.unsqueeze(0),
+            item_embedding.unsqueeze(0),
             recommended_embeddings,
             dim=1
         )
@@ -50,7 +56,7 @@ class MetricsCalculator:
         return 0.7 * sp_at_k + 0.3 * (1 - redundancy)
 
     def contextual_ndcg(self,
-                       target_embedding: torch.Tensor,
+                       item_embedding: torch.Tensor,
                        recommended_embeddings: torch.Tensor,
                        target_category: str,
                        recommended_categories: List[str]) -> float:
@@ -58,7 +64,7 @@ class MetricsCalculator:
         Вычисляет Contextual NDCG с учетом семантической близости и категорий.
         """
         similarities = F.cosine_similarity(
-            target_embedding.unsqueeze(0),
+            item_embedding.unsqueeze(0),
             recommended_embeddings,
             dim=1
         )
@@ -250,16 +256,15 @@ class MetricsCalculator:
         return metrics
 
     def compute_metrics(self,
-                       target_embedding: torch.Tensor,
+                       item_embedding: torch.Tensor,
                        recommended_embeddings: torch.Tensor,
                        target_category: str,
                        recommended_categories: List[str],
-                       k: int,
-                       user_demographics: Dict[str, str] = None,
-                       demographic_centroids: Dict[str, Dict[str, torch.Tensor]] = None,
                        recommended_ids: List[str] = None,
                        relevant_ids: Set[str] = None,
                        relevance_scores: Dict[str, float] = None) -> Dict[str, float]:
+                       k: int) -> Dict[str, float]: #user_demographics: Dict[str, str] = None,
+                       #demographic_centroids: Dict[str, Dict[str, torch.Tensor]] = None
         """
         Вычисляет все метрики для одного пользователя.
         
@@ -281,17 +286,17 @@ class MetricsCalculator:
         metrics = {}
         metrics = {
             "semantic_precision@k": self.semantic_precision_at_k(
-                target_embedding,
+                item_embedding,
                 recommended_embeddings,
                 k
             ),
             "cross_category_relevance": self.cross_category_relevance(
-                self.semantic_precision_at_k(target_embedding, recommended_embeddings, k),
+                self.semantic_precision_at_k(item_embedding, recommended_embeddings, k),
                 target_category,
                 recommended_categories
             ),
             "contextual_ndcg": self.contextual_ndcg(
-                target_embedding,
+                item_embedding,
                 recommended_embeddings,
                 target_category,
                 recommended_categories
@@ -299,13 +304,13 @@ class MetricsCalculator:
         }
         
         # Добавляем DAS если доступны демографические данные
-        if user_demographics and demographic_centroids:
-            das_scores = self.demographic_alignment_score(
-                user_demographics,
-                recommended_embeddings,
-                demographic_centroids
-            )
-            metrics.update(das_scores)
+        # if user_demographics and demographic_centroids:
+        #     das_scores = self.demographic_alignment_score(
+        #         user_demographics,
+        #         recommended_embeddings,
+        #         demographic_centroids
+        #     )
+        #     metrics.update(das_scores)
             
         classic_metrics = self.compute_classic_metrics(
             recommended_ids,
