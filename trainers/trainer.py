@@ -92,6 +92,14 @@ class Trainer:
         df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
 
         try:
+            category_mapping_df = pd.read_parquet('./data/mappings/category_mapping.parquet')
+            category_mapping = dict(zip(category_mapping_df['category'], category_mapping_df['category_id']))
+            print(f"Loaded category mapping with {len(category_mapping)} categories")
+        except Exception as e:
+            print(f"Warning: Could not load category mapping: {str(e)}")
+            category_mapping = {}
+
+        try:
            from indexer import main as update_index
            index_config = self.config.copy()
            index_config['inference']['model_path'] = "temp_current_model"
@@ -236,9 +244,12 @@ class Trainer:
                 relevance_scores[str(faiss_video_id)] = 1.0
                 
                 if orig_video_id in df_videos_map:
-                    rec_categories.append(df_videos_map[orig_video_id].get('category', 'Unknown'))
+                    category_name = df_videos_map[orig_video_id].get('category', 'Unknown')
+                    # Получаем числовой ID категории из маппинга
+                    category_id = category_mapping.get(category_name, -1)
+                    rec_categories.append(category_id)
                 else:
-                    rec_categories.append('Unknown')
+                    rec_categories.append(-1)  # -1 для неизвестной категории
         else:
             # Если нет рекомендаций, создаем пустые данные
             rec_embeddings = torch.zeros((0, user_emb.size(0)), device=self.device)
@@ -247,11 +258,12 @@ class Trainer:
         
         # Target category info
         target_id = items_ids[0].item() if len(items_ids) > 0 and items_ids[0].item() > 0 else None
-        target_category = 'Unknown'
+        target_category = -1
         if target_id is not None:
             orig_target_video_id = self.val_loader.dataset.reverse_item_id_map.get(target_id)
             if orig_target_video_id in df_videos_map:
-                target_category = df_videos_map[orig_target_video_id].get('category', 'Unknown')
+                category_name = df_videos_map[orig_target_video_id].get('category', 'Unknown')
+                target_category = category_mapping.get(category_name, -1)
 
         # User demographic data
         # user_demographics = {}
