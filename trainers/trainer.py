@@ -207,6 +207,7 @@ class Trainer:
                         df_videos_map,
                         item_embeddings_array,
                         metrics_calculator,
+                        category_mapping,
                         top_k
                         # demographic_data,
                         # demographic_features,
@@ -217,7 +218,7 @@ class Trainer:
 
         return self._compile_metrics(total_loss, total_contrastive_loss, total_recommendation_loss, metrics_accum, num_users)
 
-    def _process_user(self, user_emb, item_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings_array, metrics_calculator, top_k):
+    def _process_user(self, user_emb, item_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings_array, metrics_calculator, category_mapping, top_k):
         """Обработка одного пользователя для расчета метрик"""
         # Поиск рекомендаций
         user_emb_np = user_emb.cpu().numpy().astype('float32')
