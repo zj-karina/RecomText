@@ -206,12 +206,12 @@ class Trainer:
         return self._compile_metrics(total_loss, total_contrastive_loss, total_recommendation_loss, metrics_accum, num_users)
 
     def _process_user(self, user_emb, target_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings, metrics_calculator, top_k, demographic_data, demographic_features, demographic_centroids):
-        """Process single user for metrics calculation with proper ground truth handling"""
-        # Search for recommendations based on user embedding
+        """Обработка одного пользователя для расчета метрик"""
+        # Поиск рекомендаций
         user_emb_np = user_emb.cpu().numpy().astype('float32')
         distances, indices = index.search(user_emb_np.reshape(1, -1), top_k)
         
-        # List of recommended video IDs for metrics
+        # Метаданные рекомендаций
         rec_embeddings = []
         rec_categories = []
         relevant_ids = []
@@ -231,7 +231,6 @@ class Trainer:
                 orig_video_id = self.val_loader.dataset.reverse_item_id_map.get(int(faiss_video_id))
                 
                 relevant_ids.append(orig_video_id)
-                relevance_scores[str(item_id)] = 1.0
                 
                 if orig_video_id in df_videos_map:
                     rec_categories.append(df_videos_map[orig_video_id].get('category', 'Unknown'))
@@ -249,7 +248,7 @@ class Trainer:
             if orig_target_video_id in df_videos_map:
                 target_category = df_videos_map[orig_target_video_id].get('category', 'Unknown')
         
-        # User demographic data
+        # Демографические данные
         user_demographics = {}
         if demographic_data is not None:
             orig_user_id = self.val_loader.dataset.reverse_user_id_map.get(user_id.item())
@@ -271,7 +270,6 @@ class Trainer:
             demographic_centroids,
             recommended_ids,
             relevant_ids,
-            relevance_scores
         )
     
         return user_metrics
