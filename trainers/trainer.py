@@ -9,6 +9,7 @@ from utils.metrics import MetricsCalculator
 import pandas as pd
 import numpy as np
 import faiss
+from datetime import datetime
 
 class Trainer:
     def __init__(self, model, train_loader, val_loader, optimizer, config):
@@ -345,25 +346,32 @@ class Trainer:
     def _print_metrics(self, metrics):
         """Форматированный вывод метрик по группам."""
         
-        # Группируем метрики по типам
-        groups = {
-            'Losses': {k: v for k, v in metrics.items() if 'loss' in k.lower()},
-            'Semantic Metrics': {k: v for k, v in metrics.items() if 'semantic' in k.lower()},
-            'Category Metrics': {k: v for k, v in metrics.items() if 'category' in k.lower() or 'cross' in k.lower()},
-            'NDCG': {k: v for k, v in metrics.items() if 'ndcg' in k.lower()},
-            'Demographic Alignment': {k: v for k, v in metrics.items() if 'das_' in k.lower()},
-            'Classical RecSys Metrics': {k: v for k, v in metrics.items() if any(x in k.lower() for x in ['precision@', 'recall@', 'mrr@']) and 'semantic' not in k.lower()}
-        }
-        
-        # Выводим метрики по группам
-        for group_name, group_metrics in groups.items():
-            if group_metrics:  # Выводим группу только если есть метрики
-                print(f"\n{group_name}:")
-                for name, value in group_metrics.items():
-                    if isinstance(value, (int, float)):
-                        print(f"  {name}: {value:.4f}")
-                    else:
-                        print(f"  {name}: {value}")
+        # Открываем файл для логирования
+        with open('metrics_log.txt', 'a') as log_file:
+            log_file.write(f"\n\n=== Metrics at {datetime.now()} ===\n")
+            
+            # Группируем метрики по типам
+            groups = {
+                'Losses': {k: v for k, v in metrics.items() if 'loss' in k.lower()},
+                'Semantic Metrics': {k: v for k, v in metrics.items() if 'semantic' in k.lower()},
+                'Category Metrics': {k: v for k, v in metrics.items() if 'category' in k.lower() or 'cross' in k.lower()},
+                'NDCG': {k: v for k, v in metrics.items() if 'ndcg' in k.lower()},
+                'Demographic Alignment': {k: v for k, v in metrics.items() if 'das_' in k.lower()},
+                'Classical RecSys Metrics': {k: v for k, v in metrics.items() if any(x in k.lower() for x in ['precision@', 'recall@', 'mrr@']) and 'semantic' not in k.lower()}
+            }
+            
+            # Выводим метрики по группам
+            for group_name, group_metrics in groups.items():
+                if group_metrics:  # Выводим группу только если есть метрики
+                    print(f"\n{group_name}:")
+                    log_file.write(f"\n{group_name}:\n")
+                    for name, value in group_metrics.items():
+                        if isinstance(value, (int, float)):
+                            print(f"  {name}: {value:.4f}")
+                            log_file.write(f"  {name}: {value:.4f}\n")
+                        else:
+                            print(f"  {name}: {value}")
+                            log_file.write(f"  {name}: {value}\n")
 
     def training_step(self, batch):
         """Один шаг обучения."""
