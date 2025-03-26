@@ -15,4 +15,4 @@ initializer_range: 0.02
 # Параметры для работы с признаками
 feature_fusion: true  # Включаем механизм объединения признаков
 numerical_projection_dropout: 0.1  # Dropout для числовых признаков
-categorical_embedding_size: 256  # Размерность эмбеддингов категориальных признаков
+categorical_embedding_size: 384  # Размерность эмбеддингов категориальных признаков

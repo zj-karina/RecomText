@@ -23,13 +23,13 @@ data:
   DIN_ITEM_LIST_LENGTH_FIELD: item_length
   POSITION_FIELD: position_id
   
-  # Поля для дополнительных признаков
-  numerical_field_list: 
-    - title_emb
-    - category_emb
-  numerical_field_dims:
-    title_emb: 384
-    category_emb: 384
+  # # Поля для дополнительных признаков
+  # numerical_field_list: 
+  #   - title_emb
+  #   - category_emb
+  # numerical_field_dims:
+  #   title_emb: 384
+  #   category_emb: 384
     
   # Параметры для подготовки данных
   field_preparation:
@@ -74,9 +74,9 @@ train_neg_sample_args: ~
   # dynamic: False
 
 # Параметры для обучения
-epochs: 1
+epochs: 10
 learning_rate: 0.001
-train_batch_size: 256
+train_batch_size: 4900
 eval_batch_size: 4096
 stopping_step: 10
 loss_type: CE
@@ -91,6 +91,7 @@ eval_args:
   order: 'TO'
   group_by: 'user'
   mode: full
+  stopping_step: 5
 
 # Параметры для оптимизации памяти
 buffer_size: 10000
@@ -116,11 +117,15 @@ hidden_act: gelu
 layer_norm_eps: 1e-12
 initializer_range: 0.02
 
-# Negative sampling
-NEG_PREFIX: neg_
-LABEL_FIELD: label
-EMBEDDING_SIZE: 64
+# # Negative sampling
+# NEG_PREFIX: neg_
+# LABEL_FIELD: label
+# EMBEDDING_SIZE: 64
 
 # Training parameters
 save_step: 10
 eval_step: 1
+
+# additional_feat_suffix: [item]
+# load_col:
+#     item: [item_id, detailed_view_embedding, category_embedding]

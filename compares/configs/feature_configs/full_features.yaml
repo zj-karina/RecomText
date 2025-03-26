@@ -27,6 +27,10 @@ rutube:
       "duration",
       "author_id"
     ]
+    text_features: [
+      "detailed_view",
+      "category"
+    ]
     numerical_features: [
       "total_watchtime",
       "timestamp",
@@ -34,10 +38,6 @@ rutube:
       "age",
       "hour_sin",
       "hour_cos",
-      "detailed_view_embedding",
-      "detailed_view_embedding_list",
-      "category_embedding",
-      "category_embedding_list"
     ]
     categorical_features: [
       "sex",
@@ -91,4 +91,6 @@ lastfm:
     ITEM_ID_FIELD: "artist_id"
     RATING_FIELD: "plays"
     TIME_FIELD: "timestamp"
-    TEXT_FIELDS: ["artist_name"] 
+    TEXT_FIELDS: ["artist_name"]
+
+name: "full_features"

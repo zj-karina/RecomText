@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Optional, Dict, List
 from recbole.quick_start import run_recbole
 from recbole.utils import init_seed
-from data.preprocessing.feature_preprocessor import FeaturePreprocessor, get_full_features_config
+from data.preprocessing.feature_preprocessor import FeaturePreprocessor
 from data.preprocessing.rutube_preprocessor import RutubePreprocessor
 from data.preprocessing.lastfm_preprocessor import LastFMPreprocessor
 from utils.logger import setup_logging
@@ -78,16 +78,6 @@ def generate_config(
     # Добавляем маппинг полей
     config['data'].update(dataset_features['field_mapping'])
     
-    # Проверяем наличие текстовых полей
-    if 'TEXT_FIELDS' in dataset_features['field_mapping']:
-        text_fields = dataset_features['field_mapping']['TEXT_FIELDS']
-        # Добавляем эмбеддинги в numerical_features
-        for field in text_fields:
-            config['data']['numerical_features'].extend([
-                f'{field}_embedding',
-                f'{field}_embedding_list'
-            ])
-    
     # Проверяем наличие категориальных признаков
     if 'categorical_features' in dataset_features['features']:
         cat_fields = dataset_features['features']['categorical_features']
@@ -142,6 +132,7 @@ def cosine_similarity_faiss(vecs1, vecs2):
 
     # Поиск сходства
     k_search = vecs2.shape[0]
+    k_search = min(2048, k_search)
     D, _ = index.search(vecs1.detach().cpu().numpy(), k_search)
     return torch.tensor(D, device=vecs1.device)
 
@@ -367,21 +358,20 @@ def run_experiment(
 
         def check_available_gpus():
             if not torch.cuda.is_available():
-                print("CUDA is not available. No GPU found.")
+                logger.info("CUDA is not available. No GPU found.")
                 return
         
         num_gpus = torch.cuda.device_count()
-        print(f"Number of available GPUs: {num_gpus}")
+        logger.info(f"Number of available GPUs: {num_gpus}")
     
         for i in range(num_gpus):
-            print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
-            print(f"  Memory Allocated: {torch.cuda.memory_allocated(i) / 1024**3:.2f} GB")
-            print(f"  Memory Cached: {torch.cuda.memory_reserved(i) / 1024**3:.2f} GB")
-            print(f"  Memory Free: {(torch.cuda.get_device_properties(i).total_memory - torch.cuda.memory_allocated(i)) / 1024**3:.2f} GB")
-            print()
+            logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+            logger.info(f"  Memory Allocated: {torch.cuda.memory_allocated(i) / 1024**3:.2f} GB")
+            logger.info(f"  Memory Cached: {torch.cuda.memory_reserved(i) / 1024**3:.2f} GB")
+            logger.info(f"  Memory Free: {(torch.cuda.get_device_properties(i).total_memory - torch.cuda.memory_allocated(i)) / 1024**3:.2f} GB")
     
         check_available_gpus()
-
+        
         # Загружаем данные
         df = pd.read_csv(input_file)
         # Получаем препроцессор для конкретного датасета
@@ -391,7 +381,7 @@ def run_experiment(
         
         if dataset_type == 'rutube':
             df['rutube_video_id'] = df['rutube_video_id'].apply(lambda x: x.strip('video_'))
-        
+
         # Загружаем конфигурацию признаков
         with open(f'configs/feature_configs/{feature_config}.yaml', 'r') as f:
             feature_config_dict = yaml.safe_load(f)
@@ -451,12 +441,22 @@ def run_experiment(
         preprocessor = dataset_preprocessor(device='cuda:1')
         
         logger.info(f"Start preprocessing, available features: {df.columns.tolist()}")
-
+        
         # Предобработка данных
-        df = preprocessor.preprocess(df, feature_config_dict[dataset_type])
+        df = preprocessor.preprocess(
+            df=df,
+            feature_config=feature_config_dict[dataset_type],
+            model_type=model_params['model'].lower()
+        )
         logger.info(f"After preprocessing, available features: {df.columns.tolist()}")
+        
+        output_path = f"{output_dir}/{experiment_name}/"
+        os.makedirs(output_path, exist_ok=True)
 
-        # Сохраняем взаимодействия с явным указанием типов
+        user_embedding_cols = []
+        item_embedding_cols = [col for col in df.columns if col.endswith('_embedding')]
+        inter_embedding_cols = []
+        
         if dataset_type == 'rutube':
             inter_df = df[['viewer_uid', 'rutube_video_id', 'timestamp', 'total_watchtime']].copy()
             inter_df = inter_df.rename(columns={
@@ -464,19 +464,41 @@ def run_experiment(
                 'rutube_video_id': 'item_id',
                 'total_watchtime': 'rating'
             })
+        
             df_videos = pd.read_parquet("~/RecomText/data/video_info.parquet")
             df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
-            # Добавляем title embeddings в interaction features
-            embedding_cols = [col for col in df.columns if col.endswith('_embedding') or col.endswith('_embedding_list')]
-            if embedding_cols:
-                # Добавляем эмбеддинги в inter_df
-                for col in embedding_cols:
-                    inter_df[col] = df[col].apply(lambda x: torch.tensor(x, dtype=torch.float32) if isinstance(x, (list, np.ndarray)) else x)
-                logger.info(f"Added {len(embedding_cols)} embedding features: {embedding_cols}")
-            else:
-                logger.warning("No embedding features found after preprocessing!")
+        
+            # Разделяем эмбеддинги: 
+            # 1) Эмбеддинги для item (например, category_embedding)
+            # 2) Эмбеддинги для inter (по экспам detailed_view_embedding здесь дал ниже метрики, чем если он в item)
+        
+            if item_embedding_cols:
+                item_df = df[['rutube_video_id']].copy().rename(columns={'rutube_video_id': 'item_id'})
+                for col in item_embedding_cols:
+                    item_df[col] = df[col].apply(lambda x: ' '.join(map(str, x)))  # float_seq
+        
+                item_header = ['item_id:token'] + [f'{col}:float_seq' for col in item_embedding_cols]
+        
+                with open(f'{output_path}{experiment_name}.item', 'w', encoding='utf-8') as f:
+                    f.write('\t'.join(item_header) + '\n')
+                    item_df.to_csv(f, sep='\t', index=False, header=False)
+        
+                logger.info(f"Saved item file: {output_path}{experiment_name}.item with headers: {item_header}")
 
-        else:  # lastfm
+            if user_embedding_cols:
+                user_df = df[['viewer_uid']].copy().rename(columns={'viewer_uid': 'user_id'})
+                for col in user_embedding_cols:
+                    item_df[col] = df[col].apply(lambda x: ' '.join(map(str, x)))  # float_seq
+        
+                user_header = ['user_id:token'] + [f'{col}:float_seq' for col in user_embedding_cols]
+        
+                with open(f'{output_path}{experiment_name}.user', 'w', encoding='utf-8') as f:
+                    f.write('\t'.join(user_header) + '\n')
+                    user_df.to_csv(f, sep='\t', index=False, header=False)
+        
+                logger.info(f"Saved item file: {output_path}{experiment_name}.user with headers: {user_header}")
+                
+        else:  # lastfm dataset
             inter_df = df[['user_id', 'artist_id', 'timestamp', 'plays']].copy()
             inter_df = inter_df.rename(columns={
                 'artist_id': 'item_id',
@@ -486,39 +508,28 @@ def run_experiment(
         # Убеждаемся, что timestamp присутствует и отсортирован
         if 'timestamp' not in inter_df.columns:
             raise ValueError("timestamp field is required for sequential recommendation")
-            
-        # Сортируем по времени
+        
+        # ---- Сортируем по времени ----
         inter_df = inter_df.sort_values('timestamp')
         
-        # Создаем директорию для эксперимента
-        os.makedirs(f"{output_dir}/{experiment_name}", exist_ok=True)
+        # ---- Записываем .inter (интеракции + detailed_view_embedding) ----
+        inter_header = ['user_id:token', 'item_id:token', 'rating:float', 'timestamp:float']
+        if inter_embedding_cols:
+            inter_header += [f'{col}:float_seq' for col in inter_embedding_cols]
         
-        # Записываем файл с заголовками, содержащими типы
-        with open(f'{output_dir}/{experiment_name}/{experiment_name}.inter', 'w', encoding='utf-8') as f:
-            # Определяем типы для каждого поля
-            header_types = [
-                'user_id:token',
-                'item_id:token',
-                'rating:float',
-                'timestamp:float'  # Убеждаемся, что timestamp включен
-            ]
-            
-            # Add title embedding fields if present
-            if dataset_type == 'rutube' and embedding_cols:
-                header_types.extend([f'{col}:float' for col in embedding_cols])
-            
-            # Записываем заголовок и данные
-            f.write('\t'.join(header_types) + '\n')
+        with open(f'{output_path}{experiment_name}.inter', 'w', encoding='utf-8') as f:
+            f.write('\t'.join(inter_header) + '\n')
             inter_df.to_csv(f, sep='\t', index=False, header=False)
-            logger.info(f"Saved interaction file with headers: {header_types}")
         
+        logger.info(f"Saved interaction file: {output_path}{experiment_name}.inter with headers: {inter_header}")
+
         # Обновляем конфигурацию
-        config_dict = {
+        base_config_dict = {
             'data_path': output_dir,
             'checkpoint_dir': f'./ckpts/saved_{experiment_name}',
             'save_dataset': True,
             'load_col': {
-                'inter': ['user_id', 'item_id', 'rating', 'timestamp'] + (embedding_cols if dataset_type == 'rutube' and embedding_cols else [])
+                'inter': ['user_id', 'item_id', 'rating', 'timestamp'] + inter_embedding_cols,
             },
             'eval_args': {
                 'split': {'RS': [0.8, 0.1, 0.1]},
@@ -537,18 +548,22 @@ def run_experiment(
             'pytorch_gpu_id': 1,
             
             # Add text feature configuration
-            'feature_fusion': True,  # Enable feature fusion in BERT4Rec
-            'numerical_features': embedding_cols if dataset_type == 'rutube' and embedding_cols else [],
-            'embedding_size': 384,  # Match BERT embedding size
+            'feature_fusion': True,
+            'embedding_size': 384,
             'numerical_projection_dropout': 0.1,
             
             # Add data configuration for embeddings
             'data': {
-                'numerical_features': embedding_cols if dataset_type == 'rutube' and embedding_cols else [],
-                'token_features': []  # Add categorical features if needed
+                'numerical_features': inter_embedding_cols + item_embedding_cols + user_embedding_cols,
+                # 'token_features': feature_config_dict[dataset_type]['features'].get('categorical_features', []),
+                # 'text_fields': feature_config_dict[dataset_type]['features'].get('text_fields', [])
             }
         }
-
+        
+        if item_embedding_cols:
+            base_config_dict['load_col']['item'] = ['item_id'] + item_embedding_cols
+        if user_embedding_cols:
+            base_config_dict['load_col']['user'] = ['user_id'] + user_embedding_cols
         # Генерируем конфиг и запускаем обучение
         config, config_path = generate_config(
             features=feature_config_dict,
@@ -558,26 +573,29 @@ def run_experiment(
             dataset_type=dataset_type
         )
         
-        config.update(config_dict)
+        # Обновляем только базовые параметры, сохраняя конфигурацию признаков
+        config.update(base_config_dict)
         
-        print(f"CONFIG DICT = {config_dict}")
-        print(f"Using GPU ID: {config_dict['gpu_id']}")
-        print(f"Embedding columns: {embedding_cols if dataset_type == 'rutube' and embedding_cols else []}")
-        print(f"Interaction features: {inter_df.columns.tolist()}")
+        logger.info(f"Final config: {config}")
+        logger.info(f"Using GPU ID: {config['gpu_id']}")
+        logger.info(f"Numerical features: {config['data']['numerical_features']}")
+        logger.info(f"Token features: {config['data'].get('token_features', [])}")
+        logger.info(f"Text fields: {config['data'].get('text_fields', [])}")
+        logger.info(f"Interaction features: {inter_df.columns.tolist()}")
         
         init_seed(42, True)
         result = run_recbole(
             model=model_params['model'],
             dataset=experiment_name,
             config_file_list=[config_path],
-            config_dict=config_dict
+            config_dict=config
         )
         logger.info(f"RecBole config: {config}")
         logger.info(f"Dataset columns: {inter_df.columns.tolist()}")
 
         # Запускаем кастомные метрики
-        custom_metrics = evaluate_with_custom_metrics(preprocessor, config, dataset_type, df_videos_map)
-        logger.info(f"Custom Metrics: {custom_metrics}")
+        # custom_metrics = evaluate_with_custom_metrics(preprocessor, config, dataset_type, df_videos_map)
+        # logger.info(f"Custom Metrics: {custom_metrics}")
 
         logger.info(f"Training completed. Model saved in ./ckpts/saved_{experiment_name}")
         return result

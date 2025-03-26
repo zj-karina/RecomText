@@ -16,4 +16,4 @@ initializer_range: 0.02
 # Feature parameters
 feature_fusion: true
 numerical_projection_dropout: 0.1
-categorical_embedding_size: 512
+categorical_embedding_size: 384
