@@ -24,7 +24,7 @@ rutube:
     ITEM_ID_FIELD: "rutube_video_id"
     RATING_FIELD: "total_watchtime"
     TIME_FIELD: "timestamp"
-    TEXT_FIELDS: ["title", "category"]
+    TEXT_FIELDS: ["detailed_view", "category"]
 
 lastfm:
   features:
