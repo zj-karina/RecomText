@@ -28,22 +28,33 @@ class MultimodalRecommendationModel(nn.Module):
         self.user_fusion = nn.Linear(text_embed_dim + id_embed_dim, text_embed_dim)
         self.items_fusion = nn.Linear(text_embed_dim + id_embed_dim, text_embed_dim)
 
+        # Добавляем dropout для регуляризации
+        self.dropout = nn.Dropout(0.3)  # Сильный dropout для борьбы с переобучением
+
     def forward(self, items_text_inputs, user_text_inputs, item_ids, user_id):
         # Text embeddings
         items_text_embeddings = self.text_model(**items_text_inputs).last_hidden_state.mean(dim=1)
         user_text_embeddings  = self.text_model(**user_text_inputs).last_hidden_state.mean(dim=1)
     
+        # Применяем dropout к текстовым эмбеддингам
+        items_text_embeddings = self.dropout(items_text_embeddings)
+        user_text_embeddings = self.dropout(user_text_embeddings)
+    
         # ID embeddings
         items_id_embeddings = self.items_id_embeddings(item_ids).mean(dim=1)
         user_id_embedding   = self.user_id_embeddings(user_id)
     
-        # Fusion
+        # Fusion с большим весом для ID эмбеддингов
         items_embeddings = self.items_fusion(
-            torch.cat([items_text_embeddings, items_id_embeddings], dim=-1)
+            torch.cat([items_text_embeddings * 0.7, items_id_embeddings * 1.3], dim=-1)  # Увеличиваем вес ID
         )
         user_embeddings  = self.user_fusion(
-            torch.cat([user_text_embeddings, user_id_embedding], dim=-1)
+            torch.cat([user_text_embeddings * 0.7, user_id_embedding * 1.3], dim=-1)  # Увеличиваем вес ID
         )
+    
+        # Финальный dropout
+        items_embeddings = self.dropout(items_embeddings)
+        user_embeddings = self.dropout(user_embeddings)
     
         return items_embeddings, user_embeddings
 
