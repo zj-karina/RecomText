@@ -14,8 +14,9 @@ class MetricsCalculator:
             sim_threshold_precision: порог для "успешной" семантической близости в precision
             sim_threshold_ndcg: порог для "успешной" семантической близости в NDCG
         """
-        self.sim_threshold_precision = sim_threshold_precision
-        self.sim_threshold_ndcg = sim_threshold_ndcg
+        # Устанавливаем значения по умолчанию, если переданы None
+        self.sim_threshold_precision = sim_threshold_precision if sim_threshold_precision is not None else 0.8
+        self.sim_threshold_ndcg = sim_threshold_ndcg if sim_threshold_ndcg is not None else 0.83
         self.calibrated = False
         
         # Для калибровки порогов
@@ -94,8 +95,8 @@ class MetricsCalculator:
         if recommended_embeddings.shape[0] == 0:
             return 0.0
         
-        # Если пороги не калиброваны, используем значения по умолчанию
-        if not self.calibrated and self.sim_threshold_precision is None:
+        # Если порог не установлен, используем значение по умолчанию
+        if self.sim_threshold_precision is None:
             self.sim_threshold_precision = 0.8
             print(f"Используем порог по умолчанию для precision: {self.sim_threshold_precision}")
         
@@ -131,32 +132,57 @@ class MetricsCalculator:
                        target_category: str,
                        recommended_categories: List[str]) -> float:
         """
-        Вычисляет Contextual NDCG с учетом семантической близости и категорий.
+        Вычисляет Contextual NDCG, учитывая семантическую близость и категории.
         """
+        if recommended_embeddings.shape[0] == 0:
+            return 0.0
+        
+        # Если порог не установлен, используем значение по умолчанию
+        if self.sim_threshold_ndcg is None:
+            self.sim_threshold_ndcg = 0.83
+            print(f"Используем порог по умолчанию для NDCG: {self.sim_threshold_ndcg}")
+        
+        # Вычисление косинусного сходства
         similarities = F.cosine_similarity(
             item_embedding.unsqueeze(0),
             recommended_embeddings,
             dim=1
         )
         
-        relevances = []
-        for sim, rec_category in zip(similarities, recommended_categories):
-            sim_val = sim.item()
+        # Вычисляем релевантность для каждой рекомендации
+        relevance = []
+        for i, sim_val in enumerate(similarities):
+            sim_val = sim_val.item()
+            rec_category = recommended_categories[i] if i < len(recommended_categories) else None
+            
+            # Высокая релевантность: та же категория и высокое сходство
             if rec_category == target_category and sim_val >= self.sim_threshold_ndcg:
-                rel = 3
+                relevance.append(1.0)
+            # Средняя релевантность: другая категория, но высокое сходство
             elif rec_category != target_category and sim_val >= self.sim_threshold_ndcg:
-                rel = 2
+                relevance.append(0.7)
+            # Низкая релевантность: та же категория, но низкое сходство
             elif rec_category == target_category and sim_val < self.sim_threshold_ndcg:
-                rel = 1
+                relevance.append(0.3)
+            # Нерелевантно: другая категория и низкое сходство
             else:
-                rel = 0
-            relevances.append(rel)
-
-        dcg = sum(rel / math.log2(rank + 2) for rank, rel in enumerate(relevances, 1))
-        ideal_relevances = sorted(relevances, reverse=True)
-        idcg = sum(rel / math.log2(rank + 2) for rank, rel in enumerate(ideal_relevances, 1))
+                relevance.append(0.0)
         
-        return dcg / idcg if idcg > 0 else 0
+        # Вычисляем DCG
+        dcg = 0.0
+        for i, rel in enumerate(relevance):
+            dcg += rel / math.log2(i + 2)  # i+2 потому что индексация с 0, а позиции с 1
+        
+        # Вычисляем идеальный DCG (сортируем релевантность по убыванию)
+        ideal_relevance = sorted(relevance, reverse=True)
+        idcg = 0.0
+        for i, rel in enumerate(ideal_relevance):
+            idcg += rel / math.log2(i + 2)
+        
+        # Вычисляем NDCG
+        ndcg = dcg / idcg if idcg > 0 else 0.0
+        
+        return ndcg
 
     def demographic_alignment_score(self,
                                   user_demographics: Dict[str, str],
@@ -191,26 +217,36 @@ class MetricsCalculator:
                 das_scores[f"das_{demo_feature}"] = similarities.mean().item()
         return das_scores
 
-    def precision_at_k(self, 
-                     recommended_ids: List[str], 
-                     relevant_ids: Set[str], 
-                     k: int) -> float:
+    def semantic_precision_at_k(self, 
+                        item_embedding: torch.Tensor,
+                            recommended_embeddings: torch.Tensor,
+                            k: int) -> float:
         """
-        Args:
-            recommended_ids: список ID рекомендованных элементов
-            relevant_ids: множество ID релевантных элементов
-            k: количество рекомендаций для оценки
+        Вычисляет Semantic Precision@K.
+        
+        Сравнивает каждый рекомендованный эмбеддинг с эмбеддингом просмотренного товара
+        и считает долю рекомендаций, которые семантически близки к нему.
         """
-        if not recommended_ids or k <= 0:
+        if recommended_embeddings.shape[0] == 0:
             return 0.0
-            
-        # Обрезаем рекомендации до k элементов
-        recommended_at_k = recommended_ids[:k]
         
-        # Считаем количество релевантных элементов в топ-k
-        hits = sum(1 for item_id in recommended_at_k if item_id in relevant_ids)
+        # Если порог не установлен, используем значение по умолчанию
+        if self.sim_threshold_precision is None:
+            self.sim_threshold_precision = 0.8
+            print(f"Используем порог по умолчанию для precision: {self.sim_threshold_precision}")
         
-        return hits / min(k, len(recommended_at_k))
+        # Вычисление косинусного сходства
+        similarities = F.cosine_similarity(
+            item_embedding.unsqueeze(0),
+            recommended_embeddings,
+            dim=1
+        )
+
+        # Считаем, сколько попало выше порога
+        successes = (similarities >= self.sim_threshold_precision).sum().item()
+        precision_at_k = successes / min(k, recommended_embeddings.shape[0])
+
+        return precision_at_k
 
     def recall_at_k(self, 
                   recommended_ids: List[str], 
