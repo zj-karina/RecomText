@@ -1,6 +1,6 @@
 model:
   text_model_name: "intfloat/multilingual-e5-base"
-  id_embed_dim: 64
+  id_embed_dim: 256
   text_embed_dim: 768
 
 data:
@@ -21,8 +21,9 @@ training:
   save_total_limit: 3           # Максимальное количество сохраняемых чекпоинтов 
 
 metrics:
-  sim_threshold_precision: 0.89
-  sim_threshold_ndcg: 0.83
+  sim_threshold_precision: null  # Будет вычислено автоматически
+  sim_threshold_ndcg: null       # Будет вычислено автоматически
+  calibration_samples: 1000      # Количество образцов для калибровки
   
 inference:
   embeddings_path: "./data/item_embeddings.npy" 

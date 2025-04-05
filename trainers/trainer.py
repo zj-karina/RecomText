@@ -25,7 +25,13 @@ class Trainer:
         name_contrastive_loss = config.get('training', {}).get('contrastive_loss', 'cos_emb') # for future experiments with new losses
         self.recommendation_loss_fn, self.contrastive_loss_fn = get_losses(name_contrastive_loss)
 
-        self.metrics_calculator = MetricsCalculator()
+        # Инициализируем калькулятор метрик с автоматической калибровкой
+        sim_threshold_precision = config.get('metrics', {}).get('sim_threshold_precision', None)
+        sim_threshold_ndcg = config.get('metrics', {}).get('sim_threshold_ndcg', None)
+        self.metrics_calculator = MetricsCalculator(
+            sim_threshold_precision=sim_threshold_precision,
+            sim_threshold_ndcg=sim_threshold_ndcg
+        )
         
         self.best_metric = float('-inf')
         self.best_epoch = 0
@@ -216,6 +222,10 @@ class Trainer:
                     self._update_metrics(metrics_accum, user_metrics)
                     num_users += 1
 
+        # После сбора всех метрик, калибруем пороги
+        if len(self.metrics_calculator.all_similarities) >= self.config.get('metrics', {}).get('calibration_samples', 1000):
+            self.metrics_calculator.calibrate_thresholds()
+        
         return self._compile_metrics(total_loss, total_contrastive_loss, total_recommendation_loss, metrics_accum, num_users)
 
     def _process_user(self, user_emb, item_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings_array, metrics_calculator, category_mapping, top_k):
