@@ -217,36 +217,26 @@ class MetricsCalculator:
                 das_scores[f"das_{demo_feature}"] = similarities.mean().item()
         return das_scores
 
-    def semantic_precision_at_k(self, 
-                        item_embedding: torch.Tensor,
-                            recommended_embeddings: torch.Tensor,
-                            k: int) -> float:
+    def precision_at_k(self, 
+                     recommended_ids: List[str], 
+                     relevant_ids: Set[str], 
+                     k: int) -> float:
         """
-        Вычисляет Semantic Precision@K.
-        
-        Сравнивает каждый рекомендованный эмбеддинг с эмбеддингом просмотренного товара
-        и считает долю рекомендаций, которые семантически близки к нему.
+        Args:
+            recommended_ids: список ID рекомендованных элементов
+            relevant_ids: множество ID релевантных элементов
+            k: количество рекомендаций для оценки
         """
-        if recommended_embeddings.shape[0] == 0:
+        if not recommended_ids or k <= 0:
             return 0.0
+            
+        # Обрезаем рекомендации до k элементов
+        recommended_at_k = recommended_ids[:k]
         
-        # Если порог не установлен, используем значение по умолчанию
-        if self.sim_threshold_precision is None:
-            self.sim_threshold_precision = 0.8
-            print(f"Используем порог по умолчанию для precision: {self.sim_threshold_precision}")
+        # Считаем количество релевантных элементов в топ-k
+        hits = sum(1 for item_id in recommended_at_k if item_id in relevant_ids)
         
-        # Вычисление косинусного сходства
-        similarities = F.cosine_similarity(
-            item_embedding.unsqueeze(0),
-            recommended_embeddings,
-            dim=1
-        )
-
-        # Считаем, сколько попало выше порога
-        successes = (similarities >= self.sim_threshold_precision).sum().item()
-        precision_at_k = successes / min(k, recommended_embeddings.shape[0])
-
-        return precision_at_k
+        return hits / min(k, len(recommended_at_k))
 
     def recall_at_k(self, 
                   recommended_ids: List[str], 
