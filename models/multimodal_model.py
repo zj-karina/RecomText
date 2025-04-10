@@ -7,7 +7,7 @@ from transformers import AutoModel
 class MultimodalRecommendationModel(nn.Module):
     """A multimodal model for text and recommendation tasks."""
     def __init__(self, text_model_name, user_vocab_size, items_vocab_size, 
-                 id_embed_dim=32, text_embed_dim=768):
+                 id_embed_dim=256, text_embed_dim=768):
         super(MultimodalRecommendationModel, self).__init__()
         
         # Сохраняем параметры конструктора
@@ -23,27 +23,49 @@ class MultimodalRecommendationModel(nn.Module):
         # Embeddings for user IDs and items IDs
         self.user_id_embeddings = nn.Embedding(user_vocab_size, id_embed_dim)
         self.items_id_embeddings = nn.Embedding(items_vocab_size, id_embed_dim)
+        
+        # Проекционный слой для ID эмбеддингов, чтобы привести их к размерности текстовых
+        self.id_projection = nn.Linear(id_embed_dim, text_embed_dim)
 
         # Fusion layers
-        self.user_fusion = nn.Linear(text_embed_dim + id_embed_dim, text_embed_dim)
-        self.items_fusion = nn.Linear(text_embed_dim + id_embed_dim, text_embed_dim)
+        self.user_fusion = nn.Linear(text_embed_dim * 2, text_embed_dim)
+        self.items_fusion = nn.Linear(text_embed_dim * 2, text_embed_dim)
+
+        # Добавляем dropout для регуляризации
+        self.dropout = nn.Dropout(0.3)  # Сильный dropout для борьбы с переобучением
 
     def forward(self, items_text_inputs, user_text_inputs, item_ids, user_id):
         # Text embeddings
         items_text_embeddings = self.text_model(**items_text_inputs).last_hidden_state.mean(dim=1)
         user_text_embeddings  = self.text_model(**user_text_inputs).last_hidden_state.mean(dim=1)
     
+        # Применяем dropout к текстовым эмбеддингам
+        items_text_embeddings = self.dropout(items_text_embeddings)
+        user_text_embeddings = self.dropout(user_text_embeddings)
+    
         # ID embeddings
         items_id_embeddings = self.items_id_embeddings(item_ids).mean(dim=1)
         user_id_embedding   = self.user_id_embeddings(user_id)
+        
+        # Проекция ID эмбеддингов к размерности текстовых
+        items_id_projected = self.id_projection(items_id_embeddings)
+        user_id_projected = self.id_projection(user_id_embedding)
+        
+        # Применяем dropout к ID эмбеддингам
+        items_id_projected = self.dropout(items_id_projected)
+        user_id_projected = self.dropout(user_id_projected)
     
-        # Fusion
+        # Fusion с большим весом для ID эмбеддингов
         items_embeddings = self.items_fusion(
-            torch.cat([items_text_embeddings, items_id_embeddings], dim=-1)
+            torch.cat([items_text_embeddings * 0.5, items_id_projected * 1.5], dim=-1)  # Увеличиваем вес ID
         )
         user_embeddings  = self.user_fusion(
-            torch.cat([user_text_embeddings, user_id_embedding], dim=-1)
+            torch.cat([user_text_embeddings * 0.5, user_id_projected * 1.5], dim=-1)  # Увеличиваем вес ID
         )
+    
+        # Финальный dropout
+        items_embeddings = self.dropout(items_embeddings)
+        user_embeddings = self.dropout(user_embeddings)
     
         return items_embeddings, user_embeddings
 

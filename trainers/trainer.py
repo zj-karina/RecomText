@@ -9,6 +9,7 @@ from utils.metrics import MetricsCalculator
 import pandas as pd
 import numpy as np
 import faiss
+from datetime import datetime
 
 class Trainer:
     def __init__(self, model, train_loader, val_loader, optimizer, config):
@@ -24,7 +25,13 @@ class Trainer:
         name_contrastive_loss = config.get('training', {}).get('contrastive_loss', 'cos_emb') # for future experiments with new losses
         self.recommendation_loss_fn, self.contrastive_loss_fn = get_losses(name_contrastive_loss)
 
-        self.metrics_calculator = MetricsCalculator()
+        # Инициализируем калькулятор метрик с автоматической калибровкой
+        sim_threshold_precision = config.get('metrics', {}).get('sim_threshold_precision', None)
+        sim_threshold_ndcg = config.get('metrics', {}).get('sim_threshold_ndcg', None)
+        self.metrics_calculator = MetricsCalculator(
+            sim_threshold_precision=sim_threshold_precision,
+            sim_threshold_ndcg=sim_threshold_ndcg
+        )
         
         self.best_metric = float('-inf')
         self.best_epoch = 0
@@ -90,6 +97,14 @@ class Trainer:
         textual_history = pd.read_parquet('./data/textual_history.parquet')
         df_videos = pd.read_parquet("./data/video_info.parquet")
         df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
+
+        try:
+            category_mapping_df = pd.read_parquet('./data/mappings/category_mapping.parquet')
+            category_mapping = dict(zip(category_mapping_df['category'], category_mapping_df['category_id']))
+            print(f"Loaded category mapping with {len(category_mapping)} categories")
+        except Exception as e:
+            print(f"Warning: Could not load category mapping: {str(e)}")
+            category_mapping = {}
 
         try:
            from indexer import main as update_index
@@ -158,9 +173,10 @@ class Trainer:
         sim_threshold_ndcg = self.config['metrics'].get('sim_threshold_ndcg', 0.8)
         metrics_calculator = MetricsCalculator(sim_threshold_precision=sim_threshold_precision,
                                                sim_threshold_ndcg=sim_threshold_ndcg)
-        metrics_accum = {metric: 0.0 for metric in ["semantic_precision@k", "cross_category_relevance", "contextual_ndcg"]}
-        num_users = 0
+        metrics_accum = {metric: 0.0 for metric in ["semantic_precision@k", "cross_category_relevance", "contextual_ndcg", "precision@k", "recall@k", "ndcg@k", "mrr@k"]}
         top_k = self.config['inference'].get('top_k', 10)
+            
+        num_users = 0
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(self.val_loader, desc="Validation")):
@@ -184,10 +200,9 @@ class Trainer:
                 total_loss += (con_loss + self.config['training']['lambda_rec'] * rec_loss).item()
                 total_recommendation_loss += rec_loss
                 total_contrastive_loss += con_loss
-                
-                # Поиск рекомендаций и расчет метрик
-                for i in range(user_embeddings.size(0)):
 
+                # Поиск рекомендаций и расчет метрик для всех пользователей в батче
+                for i in range(user_embeddings.size(0)):  # Убираем срез [:1]
                     user_metrics = self._process_user(
                         user_embeddings[i], 
                         items_embeddings[i], 
@@ -198,6 +213,7 @@ class Trainer:
                         df_videos_map,
                         item_embeddings_array,
                         metrics_calculator,
+                        category_mapping,
                         top_k
                         # demographic_data,
                         # demographic_features,
@@ -206,53 +222,86 @@ class Trainer:
                     self._update_metrics(metrics_accum, user_metrics)
                     num_users += 1
 
+        # После сбора всех метрик, калибруем пороги
+        if len(self.metrics_calculator.all_similarities) >= self.config.get('metrics', {}).get('calibration_samples', 1000):
+            self.metrics_calculator.calibrate_thresholds()
+        
         return self._compile_metrics(total_loss, total_contrastive_loss, total_recommendation_loss, metrics_accum, num_users)
 
-    def _process_user(self, user_emb, item_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings_array, metrics_calculator, top_k):
+    def _process_user(self, user_emb, item_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings_array, metrics_calculator, category_mapping, top_k):
         """Обработка одного пользователя для расчета метрик"""
         # Поиск рекомендаций
         user_emb_np = user_emb.cpu().numpy().astype('float32')
         distances, indices = index.search(user_emb_np.reshape(1, -1), top_k)
         
+        # List of recommended video IDs for metrics
+        rec_categories = []
+        recommended_ids = []
+        relevance_scores = {}  # Инициализируем словарь для relevance_scores
+        
         if len(indices) > 0 and len(indices[0]) > 0:
-            # Получение рекомендаций
+            # Get recommendation embeddings
             rec_embeddings = torch.tensor(item_embeddings_array[indices[0]], device=self.device)
-            # Метаданные рекомендаций
-            rec_categories = []
+            
+            # Get metadata for recommendations
             for idx in indices[0]:
-                video_id = video_ids[idx][0]
-                orig_video_id = self.val_loader.dataset.reverse_item_id_map.get(video_id)
+                # Get the video ID from the FAISS index
+                faiss_video_id = int(video_ids[idx][0])
+                recommended_ids.append(str(faiss_video_id))
+                
+                # Convert to original video ID for category lookup
+                orig_video_id = self.val_loader.dataset.reverse_item_id_map.get(faiss_video_id)
+                
+                # Добавляем relevance score (по умолчанию 1.0)
+                relevance_scores[str(faiss_video_id)] = 1.0
+                
                 if orig_video_id in df_videos_map:
-                    rec_categories.append(df_videos_map[orig_video_id].get('category', 'Unknown'))
+                    category_name = df_videos_map[orig_video_id].get('category', 'Unknown')
+                    # Получаем числовой ID категории из маппинга
+                    category_id = category_mapping.get(category_name, -1)
+                    rec_categories.append(category_id)
                 else:
-                    rec_categories.append('Unknown')
+                    rec_categories.append(-1)  # -1 для неизвестной категории
         else:
-            rec_embeddings = torch.tensor([], device=self.device)
+            # Если нет рекомендаций, создаем пустые данные
+            rec_embeddings = torch.zeros((0, user_emb.size(0)), device=self.device)
+            recommended_ids = []
             rec_categories = []
+        
+        # Target category info
+        target_id = items_ids[0].item() if len(items_ids) > 0 and items_ids[0].item() > 0 else None
+        target_category = -1
+        if target_id is not None:
+            orig_target_video_id = self.val_loader.dataset.reverse_item_id_map.get(target_id)
+            if orig_target_video_id in df_videos_map:
+                category_name = df_videos_map[orig_target_video_id].get('category', 'Unknown')
+                target_category = category_mapping.get(category_name, -1)
 
-        # Демографические данные
+        # User demographic data
         # user_demographics = {}
         # if demographic_data is not None:
         #     orig_user_id = self.val_loader.dataset.reverse_user_id_map.get(user_id.item())
-
-        #     # Фильтруем нужного пользователя по его ID
+        #     # Filter for the target user
         #     user_row = demographic_data[demographic_data['viewer_uid'] == orig_user_id]
-
-        #     if not user_row.empty:  # Проверяем, есть ли данные
+        #     if not user_row.empty:
         #         user_row = user_row.iloc[0]
-        #         user_demographics = {feature: user_row[feature] for feature in demographic_features}  # Заполняем user_demo сразу
+        #         user_demographics = {feature: user_row[feature] for feature in demographic_features 
+        #                            if feature in user_row}
 
-        # Целевой товар
-        target_id = items_ids[0].item()
-        orig_target_video_id = self.val_loader.dataset.reverse_item_id_map.get(target_id)
-        target_category = df_videos_map.get(orig_target_video_id, {}).get('category', 'Unknown')
-
+        # Создаем множество релевантных ID (для классических метрик)
+        # В данном случае считаем релевантными те видео, которые пользователь уже смотрел
+        relevant_ids = set([str(id) for id in items_ids.cpu().numpy() if id > 0])
+        
+        # Calculate metrics
         user_metrics = metrics_calculator.compute_metrics(
-            item_emb,  # Это эмбеддинг товара, который пользователь уже просмотрел
-            rec_embeddings,  # Это эмбеддинги кандидатов на рекомендацию
+            item_emb,
+            rec_embeddings,
             target_category,
             rec_categories,
-            top_k
+            recommended_ids,
+            relevant_ids,
+            relevance_scores,
+            k=top_k
             # user_demographics,
             # demographic_centroids
         )
@@ -308,24 +357,32 @@ class Trainer:
     def _print_metrics(self, metrics):
         """Форматированный вывод метрик по группам."""
         
-        # Группируем метрики по типам
-        groups = {
-            'Losses': {k: v for k, v in metrics.items() if 'loss' in k.lower()},
-            'Semantic Metrics': {k: v for k, v in metrics.items() if 'semantic' in k.lower()},
-            'Category Metrics': {k: v for k, v in metrics.items() if 'category' in k.lower() or 'cross' in k.lower()},
-            'NDCG': {k: v for k, v in metrics.items() if 'ndcg' in k.lower()},
-            'Demographic Alignment': {k: v for k, v in metrics.items() if 'das_' in k.lower()}
-        }
-        
-        # Выводим метрики по группам
-        for group_name, group_metrics in groups.items():
-            if group_metrics:  # Выводим группу только если есть метрики
-                print(f"\n{group_name}:")
-                for name, value in group_metrics.items():
-                    if isinstance(value, (int, float)):
-                        print(f"  {name}: {value:.4f}")
-                    else:
-                        print(f"  {name}: {value}")
+        # Открываем файл для логирования
+        with open('metrics_log.txt', 'a') as log_file:
+            log_file.write(f"\n\n=== Metrics at {datetime.now()} ===\n")
+            
+            # Группируем метрики по типам
+            groups = {
+                'Losses': {k: v for k, v in metrics.items() if 'loss' in k.lower()},
+                'Semantic Metrics': {k: v for k, v in metrics.items() if 'semantic' in k.lower()},
+                'Category Metrics': {k: v for k, v in metrics.items() if 'category' in k.lower() or 'cross' in k.lower()},
+                'NDCG': {k: v for k, v in metrics.items() if 'ndcg' in k.lower()},
+                'Demographic Alignment': {k: v for k, v in metrics.items() if 'das_' in k.lower()},
+                'Classical RecSys Metrics': {k: v for k, v in metrics.items() if any(x in k.lower() for x in ['precision@', 'recall@', 'mrr@']) and 'semantic' not in k.lower()}
+            }
+            
+            # Выводим метрики по группам
+            for group_name, group_metrics in groups.items():
+                if group_metrics:  # Выводим группу только если есть метрики
+                    print(f"\n{group_name}:")
+                    log_file.write(f"\n{group_name}:\n")
+                    for name, value in group_metrics.items():
+                        if isinstance(value, (int, float)):
+                            print(f"  {name}: {value:.4f}")
+                            log_file.write(f"  {name}: {value:.4f}\n")
+                        else:
+                            print(f"  {name}: {value}")
+                            log_file.write(f"  {name}: {value}\n")
 
     def training_step(self, batch):
         """Один шаг обучения."""
@@ -390,4 +447,4 @@ class Trainer:
         """Перемещение данных на устройство."""
         if isinstance(x, dict):
             return {k: v.to(self.device) for k, v in x.items()}
-        return x.to(self.device) 
+        return x.to(self.device)
