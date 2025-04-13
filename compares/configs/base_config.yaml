@@ -6,59 +6,23 @@ data:
   ITEM_ID_FIELD: rutube_video_id
   TIME_FIELD: timestamp
   RATING_FIELD: total_watchtime
-  
+
   # Текстовые поля Rutube
   TEXT_FIELDS: ['title']
-  
+
   # Категориальные поля пользователя
   USER_FEATURES:
     - age
     - gender
     - region
-  
+
   # Параметры для последовательностей
   LIST_SUFFIX: _list
   MAX_ITEM_LIST_LENGTH: 50
   ITEM_LIST_LENGTH_FIELD: item_length
   DIN_ITEM_LIST_LENGTH_FIELD: item_length
   POSITION_FIELD: position_id
-  
-  # # Поля для дополнительных признаков
-  # numerical_field_list: 
-  #   - title_emb
-  #   - category_emb
-  # numerical_field_dims:
-  #   title_emb: 384
-  #   category_emb: 384
-    
-  # Параметры для подготовки данных
-  field_preparation:
-    inter:
-      # Текстовые эмбеддинги
-      - field: title_emb
-        type: float
-        source: item
-        list: True
-        dim: 384
-      - field: category_emb
-        type: float
-        source: item
-        list: True
-        dim: 384
-      
-      # Пользовательские категориальные признаки
-      - field: age
-        type: token
-        source: user
-      - field: gender
-        type: token
-        source: user
-      - field: region
-        type: token
-        source: user
-  load_col:
-    inter: [user_id, item_id, rating, timestamp]
-  
+
   # Добавляем секцию для работы с признаками
   feature_config:
     use_numerical: true
@@ -66,17 +30,19 @@ data:
     numerical_features: []  # Будет заполнено из feature_config
     token_features: []  # Будет заполнено из feature_config
     text_fields: []  # Будет заполнено из feature_config
-
+    embedding_sequence_fields: []
+    
 # Параметры для последовательных моделей
 train_neg_sample_args: ~
+  # strategy: uniform
   # distribution: uniform
   # sample_num: 1
-  # dynamic: False
 
 # Параметры для обучения
-epochs: 10
+epochs: 5
 learning_rate: 0.001
 train_batch_size: 4900
+# 4900 bert, sasrec 15000
 eval_batch_size: 4096
 stopping_step: 10
 loss_type: CE
@@ -105,6 +71,7 @@ save_dataset: true
 save_checkpoint: true
 log_interval: 100
 
+use_gpu: true
 gpu_id: 1
 
 # Model parameters
@@ -117,15 +84,10 @@ hidden_act: gelu
 layer_norm_eps: 1e-12
 initializer_range: 0.02
 
-# # Negative sampling
-# NEG_PREFIX: neg_
-# LABEL_FIELD: label
-# EMBEDDING_SIZE: 64
-
 # Training parameters
 save_step: 10
 eval_step: 1
 
-# additional_feat_suffix: [item]
-# load_col:
-#     item: [item_id, detailed_view_embedding, category_embedding]
+plm_suffix: "npy"
+plm_size: 384
+

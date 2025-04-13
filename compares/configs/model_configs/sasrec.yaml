@@ -1,5 +1,5 @@
 model: SASRec
-hidden_size: 256
+hidden_size: 384
 inner_size: 512
 n_layers: 4
 num_hidden_layers: 6

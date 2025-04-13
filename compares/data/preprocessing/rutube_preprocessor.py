@@ -10,11 +10,14 @@ from data.preprocessing.feature_preprocessor import FeaturePreprocessor
 
 
 class RutubePreprocessor:
-    def __init__(self, device=None):
+    def __init__(self, device=None, output_dir='', experiment_name=''):
         self.user_encoder = LabelEncoder()
         self.item_encoder = LabelEncoder()
-        self.feature_processor = FeaturePreprocessor(device=device)
         self.device = device
+        self.output_dir=output_dir
+        self.experiment_name=experiment_name
+        self.feature_processor = FeaturePreprocessor(device=device, output_dir=output_dir, experiment_name=experiment_name)
+
 
     def _process_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Обработка временных признаков"""
@@ -64,7 +67,8 @@ class RutubePreprocessor:
         
         return df
 
-    def preprocess(self, df: pd.DataFrame, feature_config: Dict, min_interactions: int = 5, is_train: bool = True, model_type: str = None) -> pd.DataFrame:
+    def preprocess(self, df: pd.DataFrame, feature_config: Dict, min_interactions: int = 5, is_train: bool = True, model_type: str = None, output_dir='',
+        experiment_name='') -> pd.DataFrame:
         df = df.copy()
         
         # Фильтрация пользователей и видео

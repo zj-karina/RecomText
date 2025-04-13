@@ -7,12 +7,7 @@ rutube:
       "timestamp",
       "ua_device_type",
       "ua_os",
-      "detailed_view",
       "category",
-      "detailed_view_embedding",
-      "detailed_view_embedding_list",
-      "category_embedding",
-      "category_embedding_list"
     ]
     user_features: [
       "viewer_uid",
@@ -29,7 +24,6 @@ rutube:
     ]
     text_features: [
       "detailed_view",
-      "category"
     ]
     numerical_features: [
       "total_watchtime",
@@ -46,13 +40,15 @@ rutube:
       "ua_os",
       "category"
     ]
+    embedding_sequence_fields: ["detailed_view_embedding"]
+
 
   field_mapping:
     USER_ID_FIELD: "viewer_uid"
     ITEM_ID_FIELD: "rutube_video_id"
     RATING_FIELD: "total_watchtime"
     TIME_FIELD: "timestamp"
-    TEXT_FIELDS: ["detailed_view", "category"]
+    TEXT_FIELDS: ["detailed_view"]
 
 lastfm:
   features:
@@ -61,9 +57,7 @@ lastfm:
       "artist_id",
       "timestamp",
       "plays",
-      "artist_name",
-      "artist_name_embedding",
-      "artist_name_embedding_list"
+      "artist_name"
     ]
     user_features: [
       "user_id",
@@ -77,14 +71,13 @@ lastfm:
     ]
     numerical_features: [
       "plays",
-      "age",
-      "artist_name_embedding",
-      "artist_name_embedding_list"
+      "age"
     ]
     categorical_features: [
       "gender",
       "country"
     ]
+
 
   field_mapping:
     USER_ID_FIELD: "user_id"

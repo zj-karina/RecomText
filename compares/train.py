@@ -33,12 +33,16 @@ from tqdm import tqdm
 from recbole.utils.case_study import full_sort_scores
 from sklearn.preprocessing import normalize
 import warnings
+from collections.abc import Mapping
+import copy
+
 warnings.filterwarnings("ignore", category=UserWarning)
 
 DATASET_PREPROCESSORS = {
     'rutube': RutubePreprocessor,
     'lastfm': LastFMPreprocessor
 }
+
 
 def generate_config(
     features: Dict,
@@ -57,23 +61,21 @@ def generate_config(
     with open(base_config_path, 'r') as f:
         config = yaml.safe_load(f)
     
-    # Set GPU configuration
-    config['gpu_id'] = 0
-    config['use_gpu'] = True
-    config['device'] = 'cuda:0'
+    # Проверяем и логируем GPU
+    gpu_id = config.get('gpu_id', 0)
+    use_gpu = config.get('use_gpu', False)
+    config['device'] = f'cuda:{gpu_id}' if use_gpu else 'cpu'
     
     # Получаем конфигурацию для конкретного датасета
     dataset_features = features[dataset_type]
-    
-    # Обновляем load_col из features
-    config['data']['load_col'] = {
-        'inter': dataset_features['features']['interaction_features'],
-        'item': dataset_features['features'].get('item_features', []),
-        'user': dataset_features['features'].get('user_features', [])
-    }
-    
+
     # Обновляем numerical_features
-    config['data']['numerical_features'] = dataset_features['features']['numerical_features']
+    print(f"DATASET FEATURES: {dataset_features}")
+    if 'numerical_features' in dataset_features['features']:
+        config['data']['numerical_features'] = dataset_features['features']['numerical_features']
+
+    if 'embedding_sequence_fields' in dataset_features['features']:
+        config['data']['embedding_sequence_fields'] = dataset_features['features']['embedding_sequence_fields']
     
     # Добавляем маппинг полей
     config['data'].update(dataset_features['field_mapping'])
@@ -85,9 +87,10 @@ def generate_config(
     
     # Добавляем параметры модели
     config.update(model_params)
-    
+
     # Добавляем пути к данным и чекпоинтам
     config['data_path'] = output_dir
+    config['experiment_name'] = experiment_name
     config['checkpoint_dir'] = f'./ckpts/saved_{experiment_name}'
 
     # Сохраняем итоговый конфиг
@@ -97,248 +100,7 @@ def generate_config(
     with open(config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False)
 
-    return config, config_path
-
-
-def cosine_similarity_faiss(vecs1, vecs2):
-    """
-    Вычисляет косинусное сходство с использованием Faiss на GPU.
-    """
-    vecs1 = vecs1.to(torch.float32).contiguous()
-    vecs2 = vecs2.to(torch.float32).contiguous()
-
-    # Проверка формы vecs2
-    if len(vecs2.shape) > 2:
-        print(f"Reshaping vecs2 from {vecs2.shape} to ({vecs2.shape[0] * vecs2.shape[1]}, {vecs2.shape[2]})")
-        vecs2 = vecs2.view(-1, vecs2.shape[-1])  # Преобразуем в двумерный массив
-
-    # Проверка формы vecs1
-    if len(vecs1.shape) > 2:
-        print(f"Reshaping vecs1 from {vecs1.shape} to ({vecs1.shape[0] * vecs1.shape[1]}, {vecs1.shape[2]})")
-        vecs1 = vecs1.view(-1, vecs1.shape[-1])  # Преобразуем в двумерный массив
-    elif len(vecs1.shape) == 2:
-        # Если vecs1 имеет форму [n_users, embedding_dim], расширяем её
-        vecs1 = vecs1.unsqueeze(1)  # [n_users, 1, embedding_dim]
-        vecs1 = vecs1.expand(-1, vecs2.shape[0] // vecs1.shape[0], -1)  # [n_users, 10, embedding_dim]
-        vecs1 = vecs1.reshape(-1, vecs1.shape[-1])  # [n_users * 10, embedding_dim]
-
-    # Создание индекса Faiss
-    index = faiss.IndexFlatIP(vecs2.shape[1])  # Используем внутреннее произведение
-    res = faiss.StandardGpuResources()  # Используем GPU
-    index = faiss.index_cpu_to_gpu(res, 1, index)  # Changed from 0 to 1 to use CUDA:1
-
-    # Добавление векторов в индекс
-    index.add(vecs2.detach().cpu().numpy())
-
-    # Поиск сходства
-    k_search = vecs2.shape[0]
-    k_search = min(2048, k_search)
-    D, _ = index.search(vecs1.detach().cpu().numpy(), k_search)
-    return torch.tensor(D, device=vecs1.device)
-
-def evaluate_with_custom_metrics(preprocessor, config, dataset_type, category_info, k=10):
-    """
-    Evaluate metrics on GPU using a single batch loop to avoid memory issues.
-    """
-    # Set device before loading model
-    # torch.cuda.set_device(1)  # Explicitly set CUDA device
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
-    
-    # Загрузка модели и данных
-    model_path = get_latest_checkpoint(config['checkpoint_dir'])
-
-    # Load model with explicit device setting
-    (_, model, dataset, train_data, valid_data, test_data) = load_data_and_model(
-        model_path
-    )
-    
-    # Move model to correct device
-    model.to(device)
-    model.eval()
-
-    # Получение эмбеддингов айтемов и данных для тестирования
-    item_embeddings = model.item_embedding.weight.to(device)
-    all_users = test_data.dataset.inter_feat['user_id'].to(device)
-    all_items = test_data.dataset.inter_feat['item_id'].to(device)
-    test_data.dataset.inter_feat['user_id'] = test_data.dataset.inter_feat['user_id'].to(device)
-    test_data.dataset.inter_feat['item_id'] = test_data.dataset.inter_feat['item_id'].to(device)
-    
-    # Уникальные пользователи для обработки
-    unique_users, user_indices = torch.unique(all_users, return_inverse=True)
-    # Настройка батчей
-    batch_size = config.get('eval_batch_size', 2048)
-    results = {'SP@K': 0, 'CCR': 0, 'NDCG': 0}
-    count = 0
-
-    sim_threshold_precision = config.get('sim_threshold_precision', 0.89)
-    sim_threshold_ndcg = config.get('sim_threshold_ndcg', 0.83)
-
-    print(f"Total users: {len(all_users)}")
-    original_inter_feat = test_data.dataset.inter_feat
-    # Обработка батчей
-    for i in tqdm(range(0, len(all_users), batch_size), total=len(all_users) // batch_size, desc="Processing batches"):
-        batch_users = all_users[i : i + batch_size].to(device)
-        batch_items = all_items[i : i + batch_size].to(device)
-        
-        # Получение предсказаний модели
-        batch_user_set = set(batch_users.cpu().numpy())  # Уникальные пользователи из батча
-        batch_item_set = set(batch_items.cpu().numpy())  # Уникальные айтемы из батча
-
-        # Фильтруем dataset по user_id и item_id, которые есть в батче
-        mask_users = torch.isin(test_data.dataset.inter_feat['user_id'], batch_users)
-        mask_items = torch.isin(test_data.dataset.inter_feat['item_id'], batch_items)
-        mask = mask_users & mask_items
-
-        filtered_inter_feat = test_data.dataset.inter_feat[mask]
-        
-        # Подменяем inter_feat на отфильтрованный
-        test_data.dataset.inter_feat = filtered_inter_feat
-
-        with torch.no_grad():
-            batch_scores = full_sort_scores(batch_users, model, test_data, device=device)
-
-        # Перенос предсказаний на CPU для дальнейшей обработки
-        batch_scores_cpu = batch_scores.detach().cpu()
-        print(f"Batch scores shape: {batch_scores_cpu.shape}")
-
-        # Векторизованное вычисление метрик
-        sp, ccr, ndcg = compute_metrics_for_batch(
-            preprocessor, dataset_type, batch_scores_cpu, batch_items, item_embeddings, category_info, device, sim_threshold_precision, sim_threshold_ndcg, k=k
-        )
-        
-        # Обновление результатов
-        results['SP@K'] += sp
-        results['CCR'] += ccr
-        results['NDCG'] += ndcg
-        count += batch_scores_cpu.shape[0]
-
-        test_data.dataset.inter_feat = original_inter_feat
-
-        # Очистка памяти
-        del batch_scores, batch_scores_cpu
-        torch.cuda.empty_cache()
-    
-    # Нормализация результатов
-    for key in results:
-        results[key] /= count if count > 0 else 1
-
-    return results
-
-def compute_metrics_for_batch(preprocessor, dataset_type, batch_scores, batch_items, item_embeddings, category_info, device, sim_threshold_precision, sim_threshold_ndcg, k=10):
-    """
-    Векторизованное вычисление метрик для всего батча.
-    """
-    # Получение топ-k рекомендаций
-    pred_items = batch_scores.argsort(dim=1, descending=True)[:, :k]
-    ground_truth_items = batch_items.unsqueeze(1).cpu().numpy()
-
-    # Векторизованное вычисление метрик
-    sp = semantic_precision_at_k_batch(pred_items, ground_truth_items, item_embeddings, device, sim_threshold_precision)
-    ccr, ndcg = 0, 0
-    if dataset_type == 'rutube':
-        ccr = cross_category_relevance_batch(preprocessor, pred_items, ground_truth_items, item_embeddings, category_info, device, k=k)
-        ndcg = contextual_ndcg_batch(preprocessor, pred_items, ground_truth_items, item_embeddings, category_info, device, sim_threshold_ndcg)
-
-    return sp, ccr, ndcg
-
-def semantic_precision_at_k_batch(pred_items, ground_truth_items, item_embeddings, device, sim_threshold_precision):
-    """
-    Векторизованная семантическая точность.
-    """
-    pred_items = pred_items.to(device)
-    ground_truth_items = torch.tensor(ground_truth_items, device=device)
-
-    # Векторизованное вычисление сходства
-    gt_vectors = item_embeddings[ground_truth_items]
-    rec_vectors = item_embeddings[pred_items]
-    similarity_matrix = cosine_similarity_faiss(gt_vectors, rec_vectors)
-
-    # Подсчет успешных рекомендаций
-    successful_recs = (similarity_matrix >= sim_threshold_precision).sum(dim=1)
-    return successful_recs.float().mean().item()
-
-def cross_category_relevance_batch(preprocessor, pred_items, ground_truth_items, item_embeddings, category_info, device, k=10):
-    """
-    Векторизованная кросс-категорийная релевантность.
-    """
-    pred_items = pred_items.to(device)
-    ground_truth_items = torch.tensor(ground_truth_items, device=device)
-
-    # Векторизованное вычисление сходства
-    gt_vectors = item_embeddings[ground_truth_items]
-    rec_vectors = item_embeddings[pred_items]
-    similarity_matrix = cosine_similarity_faiss(gt_vectors, rec_vectors)
-
-    # Подсчет релевантности
-    same_category_count = 0
-    cross_category_success = 0
-
-    for i, gt_item in enumerate(ground_truth_items):
-        orig_gt_item = preprocessor.item_encoder.inverse_transform([gt_item.cpu().item()])[0]
-        gt_category = category_info.get(str(orig_gt_item), {}).get('category_id')
-
-        for j, rec_item in enumerate(pred_items[i]):
-            orig_rec_item = preprocessor.item_encoder.inverse_transform([rec_item.cpu().item()])[0]
-            rec_category = category_info.get(str(orig_rec_item), {}).get('category_id')
-
-            similarity = similarity_matrix[i, j].item()
-            if rec_category == gt_category:
-                same_category_count += 1
-            elif similarity >= 0.8:
-                cross_category_success += 1
-
-    # Вычисление итоговой метрики
-    sp_k = semantic_precision_at_k_batch(pred_items, ground_truth_items, item_embeddings, device, k)
-    category_diversity = 1 - (same_category_count / (k * len(ground_truth_items)))
-    return 0.7 * sp_k + 0.3 * category_diversity
-
-def contextual_ndcg_batch(preprocessor, pred_items, ground_truth_items, item_embeddings, category_info, device, sim_threshold_ndcg):
-    relevances = []
-
-    # Приводим ground_truth_items к тензору для корректной работы
-    ground_truth_items = torch.tensor(ground_truth_items, device=device)
-    pred_items = pred_items.to(device)
-
-    # Векторизованное вычисление сходства
-    gt_vectors = item_embeddings[ground_truth_items]
-    rec_vectors = item_embeddings[pred_items]
-    similarity_matrix = cosine_similarity_faiss(gt_vectors, rec_vectors)
-
-    # Вычисление релевантности
-    for i, gt_item in enumerate(ground_truth_items):
-        # Теперь gt_item — это тензор, и можно вызвать .cpu().item()
-        orig_gt_item = preprocessor.item_encoder.inverse_transform([gt_item.cpu().item()])[0]
-        gt_category = category_info.get(str(orig_gt_item), {}).get('category_id')
-
-        for j, rec_item in enumerate(pred_items[i]):
-            orig_rec_item = preprocessor.item_encoder.inverse_transform([rec_item.cpu().item()])[0]
-            rec_category = category_info.get(str(orig_rec_item), {}).get('category_id')
-
-            similarity = similarity_matrix[i, j].item()
-            if rec_category == gt_category and similarity >= sim_threshold_ndcg:
-                relevances.append(3)
-            elif rec_category != gt_category and similarity >= sim_threshold_ndcg:
-                relevances.append(2)
-            elif rec_category == gt_category and similarity < sim_threshold_ndcg:
-                relevances.append(1)
-            else:
-                relevances.append(0)
-
-    # Вычисление DCG и IDCG
-    dcg = sum(rel / math.log2(rank + 2) for rank, rel in enumerate(relevances, 1))
-    ideal_relevances = sorted(relevances, reverse=True)
-    idcg = sum(rel / math.log2(rank + 2) for rank, rel in enumerate(ideal_relevances, 1))
-    
-    return dcg / idcg if idcg > 0 else 0
-
-def get_latest_checkpoint(checkpoint_dir: str) -> str:
-    """Находит самый последний (по времени модификации) чекпоинт в указанной директории."""
-    checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "*.pth"))
-    if not checkpoint_files:
-        raise FileNotFoundError(f"No checkpoint files found in {checkpoint_dir}")
-    
-    latest_checkpoint = max(checkpoint_files, key=os.path.getmtime) # Выбираем самый последний по дате изменения
-    return latest_checkpoint
+    return config, config_path 
 
 
 def run_experiment(
@@ -353,27 +115,20 @@ def run_experiment(
     logger = setup_logging()
 
     try:
-        torch.cuda.set_device('cuda:1')
-        os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+        base_config_path = os.path.join(os.path.dirname(__file__), 'configs', 'base_config.yaml')
+        with open(base_config_path, 'r') as f:
+            base_config = yaml.safe_load(f)
 
-        def check_available_gpus():
-            if not torch.cuda.is_available():
-                logger.info("CUDA is not available. No GPU found.")
-                return
+        use_gpu = base_config.get('use_gpu', False)
+        gpu_id = base_config.get('gpu_id', 0)
         
-        num_gpus = torch.cuda.device_count()
-        logger.info(f"Number of available GPUs: {num_gpus}")
-    
-        for i in range(num_gpus):
-            logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}")
-            logger.info(f"  Memory Allocated: {torch.cuda.memory_allocated(i) / 1024**3:.2f} GB")
-            logger.info(f"  Memory Cached: {torch.cuda.memory_reserved(i) / 1024**3:.2f} GB")
-            logger.info(f"  Memory Free: {(torch.cuda.get_device_properties(i).total_memory - torch.cuda.memory_allocated(i)) / 1024**3:.2f} GB")
-    
-        check_available_gpus()
+        logger.info(f"Using GPU ID from config: {gpu_id}")
+        torch.cuda.set_device(gpu_id)
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
         
         # Загружаем данные
         df = pd.read_csv(input_file)
+        df = df.sample(100_000)
         # Получаем препроцессор для конкретного датасета
         dataset_preprocessor = DATASET_PREPROCESSORS.get(dataset_type)
         if dataset_preprocessor is None:
@@ -437,66 +192,65 @@ def run_experiment(
             
             # Добавляем подробности о просмотре и категорию
             df[['detailed_view', 'category']] = df.apply(create_view_description, axis=1, result_type='expand')
-        
-        preprocessor = dataset_preprocessor(device='cuda:1')
-        
+
+        output_path = f"{output_dir}/{experiment_name}/"
+        os.makedirs(output_path, exist_ok=True)
+        device = f'cuda:{gpu_id}' if use_gpu else 'cpu'
+        print(output_dir)
+        print(experiment_name)
+        preprocessor = dataset_preprocessor(device=device, output_dir=output_dir,
+            experiment_name=experiment_name)
+
         logger.info(f"Start preprocessing, available features: {df.columns.tolist()}")
         
         # Предобработка данных
         df = preprocessor.preprocess(
             df=df,
             feature_config=feature_config_dict[dataset_type],
-            model_type=model_params['model'].lower()
+            model_type=model_params['model'].lower(),
         )
         logger.info(f"After preprocessing, available features: {df.columns.tolist()}")
-        
-        output_path = f"{output_dir}/{experiment_name}/"
-        os.makedirs(output_path, exist_ok=True)
 
-        user_embedding_cols = []
-        item_embedding_cols = [col for col in df.columns if col.endswith('_embedding')]
-        inter_embedding_cols = []
+        # Ищем все embedding_list-поля
+        embedding_list_cols = [col for col in df.columns if col.endswith('_embedding')]
+        emb_list_idx_fields = [col for col in df.columns if col.endswith('_idx')]
+        emb_list_idx_fields_header = [f'{col}:token' for col in emb_list_idx_fields]
         
         if dataset_type == 'rutube':
-            inter_df = df[['viewer_uid', 'rutube_video_id', 'timestamp', 'total_watchtime']].copy()
+            inter_cols = ['viewer_uid', 'rutube_video_id', 'timestamp', 'total_watchtime']
+            # на самом деле не все эмбеддинги будут относится с inter
+            # они могут быть связаны только к item или user и это надо придумать как делать автоматически
+            inter_cols.extend(emb_list_idx_fields)
+            print(f"HERE1 = {emb_list_idx_fields}")
+            
+            inter_df = df[inter_cols].copy()
             inter_df = inter_df.rename(columns={
                 'viewer_uid': 'user_id',
                 'rutube_video_id': 'item_id',
                 'total_watchtime': 'rating'
             })
+            inter_cols = list(inter_df.columns)
         
             df_videos = pd.read_parquet("~/RecomText/data/video_info.parquet")
             df_videos_map = df_videos.set_index('clean_video_id').to_dict(orient='index')
-        
-            # Разделяем эмбеддинги: 
-            # 1) Эмбеддинги для item (например, category_embedding)
-            # 2) Эмбеддинги для inter (по экспам detailed_view_embedding здесь дал ниже метрики, чем если он в item)
-        
-            if item_embedding_cols:
-                item_df = df[['rutube_video_id']].copy().rename(columns={'rutube_video_id': 'item_id'})
-                for col in item_embedding_cols:
-                    item_df[col] = df[col].apply(lambda x: ' '.join(map(str, x)))  # float_seq
-        
-                item_header = ['item_id:token'] + [f'{col}:float_seq' for col in item_embedding_cols]
-        
-                with open(f'{output_path}{experiment_name}.item', 'w', encoding='utf-8') as f:
-                    f.write('\t'.join(item_header) + '\n')
-                    item_df.to_csv(f, sep='\t', index=False, header=False)
-        
-                logger.info(f"Saved item file: {output_path}{experiment_name}.item with headers: {item_header}")
 
-            if user_embedding_cols:
-                user_df = df[['viewer_uid']].copy().rename(columns={'viewer_uid': 'user_id'})
-                for col in user_embedding_cols:
-                    item_df[col] = df[col].apply(lambda x: ' '.join(map(str, x)))  # float_seq
-        
-                user_header = ['user_id:token'] + [f'{col}:float_seq' for col in user_embedding_cols]
-        
-                with open(f'{output_path}{experiment_name}.user', 'w', encoding='utf-8') as f:
-                    f.write('\t'.join(user_header) + '\n')
-                    user_df.to_csv(f, sep='\t', index=False, header=False)
-        
-                logger.info(f"Saved item file: {output_path}{experiment_name}.user with headers: {user_header}")
+            item_df = df[['rutube_video_id', 'category']].copy().rename(columns={'rutube_video_id': 'item_id'})
+            item_header = ['item_id:token', 'category:token']
+
+            with open(f'{output_path}{experiment_name}.item', 'w', encoding='utf-8') as f:
+                f.write('\t'.join(item_header) + '\n')
+                item_df.to_csv(f, sep='\t', index=False, header=False)
+    
+            logger.info(f"Saved item file: {output_path}{experiment_name}.item with headers: {item_header}")
+
+            user_df = df[['viewer_uid', 'sex', 'region']].copy().rename(columns={'viewer_uid': 'user_id'})
+            user_header = ['user_id:token', 'sex:token', 'region:token']
+    
+            with open(f'{output_path}{experiment_name}.user', 'w', encoding='utf-8') as f:
+                f.write('\t'.join(user_header) + '\n')
+                user_df.to_csv(f, sep='\t', index=False, header=False)
+    
+            logger.info(f"Saved item file: {output_path}{experiment_name}.user with headers: {user_header}")
                 
         else:  # lastfm dataset
             inter_df = df[['user_id', 'artist_id', 'timestamp', 'plays']].copy()
@@ -509,14 +263,12 @@ def run_experiment(
         if 'timestamp' not in inter_df.columns:
             raise ValueError("timestamp field is required for sequential recommendation")
         
-        # ---- Сортируем по времени ----
         inter_df = inter_df.sort_values('timestamp')
-        
-        # ---- Записываем .inter (интеракции + detailed_view_embedding) ----
-        inter_header = ['user_id:token', 'item_id:token', 'rating:float', 'timestamp:float']
-        if inter_embedding_cols:
-            inter_header += [f'{col}:float_seq' for col in inter_embedding_cols]
-        
+        inter_header = ['user_id:token', 'item_id:token', 'rating:float', 'timestamp:float'] # для записи в .inter
+        # на самом деле не все эмбеддинги будут относится с inter
+        # они могут быть связаны только к item или user и это надо придумать как делать автоматически
+        inter_header.extend(emb_list_idx_fields_header)
+                
         with open(f'{output_path}{experiment_name}.inter', 'w', encoding='utf-8') as f:
             f.write('\t'.join(inter_header) + '\n')
             inter_df.to_csv(f, sep='\t', index=False, header=False)
@@ -529,7 +281,9 @@ def run_experiment(
             'checkpoint_dir': f'./ckpts/saved_{experiment_name}',
             'save_dataset': True,
             'load_col': {
-                'inter': ['user_id', 'item_id', 'rating', 'timestamp'] + inter_embedding_cols,
+                'inter': inter_cols,
+                'item': ['item_id', 'category'],
+                'user': ['user_id', 'sex', 'region'],
             },
             'eval_args': {
                 'split': {'RS': [0.8, 0.1, 0.1]},
@@ -541,11 +295,12 @@ def run_experiment(
             'ITEM_LIST_LENGTH_FIELD': 'item_length',
             'LIST_SUFFIX': '_list',
             'max_seq_length': 50,
-            'gpu_id': 1,
-            'use_gpu': True,
-            'device': 'cuda:1',
-            'cuda_id': 1,
-            'pytorch_gpu_id': 1,
+            'cuda_id': gpu_id,
+            'pytorch_gpu_id': gpu_id,
+            'gpu_id': gpu_id,
+            'use_gpu': use_gpu,
+            'device': device,
+
             
             # Add text feature configuration
             'feature_fusion': True,
@@ -554,16 +309,14 @@ def run_experiment(
             
             # Add data configuration for embeddings
             'data': {
-                'numerical_features': inter_embedding_cols + item_embedding_cols + user_embedding_cols,
-                # 'token_features': feature_config_dict[dataset_type]['features'].get('categorical_features', []),
+                # 'numerical_features': inter_embedding_cols + item_embedding_cols + user_embedding_cols,
+                'token_features': feature_config_dict[dataset_type]['features'].get('categorical_features', []),
+                'embedding_sequence_fields': emb_list_idx_fields,
                 # 'text_fields': feature_config_dict[dataset_type]['features'].get('text_fields', [])
             }
         }
-        
-        if item_embedding_cols:
-            base_config_dict['load_col']['item'] = ['item_id'] + item_embedding_cols
-        if user_embedding_cols:
-            base_config_dict['load_col']['user'] = ['user_id'] + user_embedding_cols
+
+        logger.info("Start generate_config()...")
         # Генерируем конфиг и запускаем обучение
         config, config_path = generate_config(
             features=feature_config_dict,
@@ -573,8 +326,33 @@ def run_experiment(
             dataset_type=dataset_type
         )
         
-        # Обновляем только базовые параметры, сохраняя конфигурацию признаков
-        config.update(base_config_dict)
+        # Обновляем только базовые параметры, сохраняя конфигурацию признаков        
+        def deep_update(d: dict, u: dict) -> dict:
+            """
+            Обновляет словарь `d` значениями из `u` рекурсивно.
+            Если ключ уже существует и оба значения — словари, то делает глубокое обновление.
+            Иначе — перезаписывает значение.
+            """
+            d = copy.deepcopy(d)
+            for k, v in u.items():
+                if isinstance(v, Mapping) and isinstance(d.get(k), Mapping):
+                    d[k] = deep_update(d.get(k, {}), v)
+                else:
+                    d[k] = v
+            return d
+
+        config, config_path = generate_config(
+            features=feature_config_dict,
+            model_params=model_params,
+            output_dir=output_dir,
+            experiment_name=experiment_name,
+            dataset_type=dataset_type
+        )
+        
+        # Обновляем конфигурацию только один раз
+        config = deep_update(config, base_config_dict)
+        
+        logger.info("Configuration updated and saved")
         
         logger.info(f"Final config: {config}")
         logger.info(f"Using GPU ID: {config['gpu_id']}")
@@ -582,14 +360,90 @@ def run_experiment(
         logger.info(f"Token features: {config['data'].get('token_features', [])}")
         logger.info(f"Text fields: {config['data'].get('text_fields', [])}")
         logger.info(f"Interaction features: {inter_df.columns.tolist()}")
+
+        logger.info("Start run_recbole()...")
         
         init_seed(42, True)
-        result = run_recbole(
-            model=model_params['model'],
-            dataset=experiment_name,
-            config_file_list=[config_path],
-            config_dict=config
-        )
+        print(f"MODEL {model_params['model']}")
+        print(f"config['data_path'] = {config['data_path']}")
+
+        import sys
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+        print(f"""{os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))}""")
+
+
+        def run_custom_model(config, config_path, experiment_name):
+            from recbole.config import Config
+            from recbole.data import create_dataset, data_preparation
+            from recbole.trainer import Trainer
+            from recbole.utils import init_seed
+        
+            # 1. Создаём конфиг с оригинальной моделью
+            config = Config(
+                model=config['model'],  # 'BERT4Rec' или 'SASRec'
+                dataset=experiment_name,
+                config_file_list=[config_path],
+                config_dict=config
+            )
+        
+            # 2. Seed
+            init_seed(config['seed'], config['reproducibility'])
+        
+            # 3. Создание оригинального датасета на основе имени модели
+            dataset = create_dataset(config)
+            train_data, valid_data, test_data = data_preparation(config, dataset)
+        
+            # 4. Подмена на кастомную модель из конфигурации
+            model_name = config['model']
+            if model_name == 'BERT4Rec':
+                from models.enhanced_bert4rec import EnhancedBERT4Rec
+                model_class = EnhancedBERT4Rec
+            elif model_name == 'SASRec':
+                from models.enhanced_sasrec import EnhancedSASRec
+                model_class = EnhancedSASRec
+            else:
+                raise ValueError(f"Model {model_name} is not recognized!")
+        
+            # 5. Создание модели
+            model = model_class(config, train_data.dataset).to(config['device'])
+        
+            # 6. Тренер
+            trainer = Trainer(config, model)
+            best_valid_score, best_valid_result = trainer.fit(train_data,
+                                                              valid_data,
+                                                              saved=True,
+                                                              show_progress=config["show_progress"])
+        
+            # 7. Тест
+            test_result = trainer.evaluate(test_data)
+        
+            return {
+                'best_valid_score': best_valid_score,
+                'best_valid_result': best_valid_result,
+                'test_result': test_result
+            }
+            
+        # Если используем кастомную модель
+        if feature_config != 'id_only':            
+            print(f"NAME = {config['model']}")
+            print(f"=-=-==-=-=-=--=")
+            
+            print(f"config['data_path'] = {config['data_path']}")
+            # Используем наш прямой запуск
+            print(f"CUSTOMS MODEL")
+            result = run_custom_model(
+                config=config,
+                config_path=config_path,
+                experiment_name=experiment_name
+            )
+        else:
+            result = run_recbole(
+                model=model_params["model"],
+                dataset=experiment_name,
+                config_file_list=[config_path],
+                config_dict=config
+            )
+
         logger.info(f"RecBole config: {config}")
         logger.info(f"Dataset columns: {inter_df.columns.tolist()}")
 

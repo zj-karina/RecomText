@@ -1,129 +1,166 @@
+import os
 import torch
 import torch.nn as nn
 from recbole.model.sequential_recommender import SASRec
-from typing import Dict, Optional
+import numpy as np
+
 
 class EnhancedSASRec(SASRec):
-    """Расширенная версия SASRec с поддержкой дополнительных признаков"""
-    
+    """SASRec с добавлением числовых, категориальных признаков и embedding list."""
+
     def __init__(self, config, dataset):
         super().__init__(config, dataset)
-        
-        # Получаем размерности для текстовых эмбеддингов
-        self.text_fields = config['data']['TEXT_FIELDS']
-        self.text_embedding_dim = {}
-        for field_info in config['data']['field_preparation']['inter']:
-            if field_info['field'].endswith('_emb'):
-                self.text_embedding_dim[field_info['field']] = field_info['dim']
-        
-        # Получаем информацию о пользовательских признаках
-        self.user_features = config['data']['USER_FEATURES']
-        self.user_feature_dims = {
-            field: dataset.field2token_num[field]
-            for field in self.user_features
-        }
-        
-        # Создаем эмбеддинги для пользовательских признаков
-        self.user_feature_embeddings = nn.ModuleDict({
-            field: nn.Embedding(dim, self.hidden_size)
-            for field, dim in self.user_feature_dims.items()
-        })
-        
-        # Проекции для текстовых эмбеддингов
-        self.text_projections = nn.ModuleDict({
-            f"{field}_emb": nn.Linear(dim, self.hidden_size)
-            for field in self.text_fields
-            for emb_field, dim in self.text_embedding_dim.items()
-            if emb_field == f"{field}_emb"
-        })
-        
-        # Слой для объединения всех признаков
-        total_dims = self.hidden_size * (1 + len(self.text_fields) + len(self.user_features))
-        self.feature_fusion = nn.Sequential(
-            nn.Linear(total_dims, self.hidden_size),
-            nn.ReLU(),
-            nn.Linear(self.hidden_size, self.hidden_size)
-        )
 
-    def forward(self, item_seq, interaction=None):
-        """
-        Args:
-            item_seq: базовая последовательность (тензор)
-            interaction: полный объект interaction с дополнительными признаками
-        """
-        # Получаем базовые эмбеддинги последовательности
-        seq_output = super().forward(item_seq)  # [batch_size, seq_len, hidden_size]
-        
-        # Если нет дополнительных признаков, возвращаем базовый выход
-        if interaction is None:
-            return seq_output
-            
-        print(f"Interaction keys: {interaction.keys()}")
-        print(f"Sequence output shape: {seq_output.shape}")
-        
-        all_features = [seq_output]
-        
-        # Обрабатываем эмбеддинги заголовков
-        if 'detailed_view_embedding' in interaction:
-            title_emb = interaction['detailed_view_embedding']  # [batch_size, embedding_size]
-            print(f"Title embedding shape: {title_emb.shape}")
-            
-            if title_emb.shape[-1] != self.embedding_size:
-                raise ValueError(f"Expected embedding size {self.embedding_size}, got {title_emb.shape[-1]}")
-                
-            if not isinstance(title_emb, torch.Tensor):
-                title_emb = torch.tensor(title_emb, dtype=torch.float32, device=seq_output.device)
-            
-            # Проецируем эмбеддинги заголовков
-            title_proj = self.title_projection(title_emb)  # [batch_size, hidden_size]
-            title_proj = self.title_norm(title_proj)
-            
-            # Расширяем до размера последовательности
-            title_proj = title_proj.unsqueeze(1).expand(-1, seq_output.size(1), -1)  # [batch_size, seq_len, hidden_size]
-            all_features.append(title_proj)
-            print(f"Title projection shape: {title_proj.shape}")
-        
-        # Обрабатываем числовые признаки
+        self.numerical_features = config['data'].get('numerical_features', [])
+        self.categorical_features = config['data'].get('token_features', [])
+        self.embedding_sequence_fields = config['data'].get('embedding_sequence_fields', [])
+
+        self.embedding_list_weights = {}
+        for field in self.embedding_sequence_fields:
+            emb_field_name = field.replace('_idx', '')
+            emb_path = os.path.join(config['data_path'], f"{emb_field_name}.npy")
+            self.embedding_list_weights[field] = torch.from_numpy(np.load(emb_path)).float()
+
+        # Размер скрытого пространства
+        self.hidden_size = config["hidden_size"]
+
+        # Проекции для числовых признаков (1 → hidden_size)
+        self.numerical_projections = nn.ModuleDict({
+            field: nn.Linear(1, self.hidden_size)
+            for field in self.numerical_features
+            if not field.endswith('_embedding')
+        })
+
+        # Эмбеддинги для категориальных признаков
+        self.categorical_embeddings = nn.ModuleDict({
+            feature: nn.Embedding(len(dataset.field2id_token[feature]), self.hidden_size)
+            for feature in self.categorical_features
+            if feature in dataset.field2id_token
+        })
+
+        self.norm_numerical = nn.LayerNorm(self.hidden_size)
+        self.norm_categorical = nn.LayerNorm(self.hidden_size)
+        self.embedding_sequence_norm = nn.LayerNorm(self.hidden_size)
+
+        self.dropout = nn.Dropout(config["hidden_dropout_prob"])
+
+        # Кол-во типов признаков, участвующих в concat
+        num_feature_sources = 1  # output SASRec
         if self.numerical_features:
-            numerical_tensors = []
-            for field in self.numerical_features:
-                if field in interaction and not field.endswith('_embedding'):
-                    num_feature = interaction[field].unsqueeze(-1)  # [batch_size, 1]
-                    if not isinstance(num_feature, torch.Tensor):
-                        num_feature = torch.tensor(num_feature, dtype=torch.float32, device=seq_output.device)
-                    projected_num = self.numerical_projections[field](num_feature)  # [batch_size, hidden_size]
-                    numerical_tensors.append(projected_num)
-            
-            if numerical_tensors:
-                numerical_output = torch.stack(numerical_tensors, dim=1)  # [batch_size, num_features, hidden_size]
-                numerical_output = self.numerical_norm(numerical_output.mean(dim=1))  # [batch_size, hidden_size]
-                numerical_output = numerical_output.unsqueeze(1).expand(-1, seq_output.size(1), -1)  # [batch_size, seq_len, hidden_size]
-                all_features.append(numerical_output)
-                print(f"Numerical output shape: {numerical_output.shape}")
-        
-        # Обрабатываем категориальные признаки
+            num_feature_sources += 1
         if self.categorical_features:
-            categorical_tensors = []
-            for field in self.categorical_features:
-                if field in interaction:
-                    cat_feature = interaction[field]
-                    if not isinstance(cat_feature, torch.Tensor):
-                        cat_feature = torch.tensor(cat_feature, dtype=torch.long, device=seq_output.device)
-                    cat_embedding = self.categorical_embeddings[field](cat_feature)  # [batch_size, hidden_size]
-                    categorical_tensors.append(cat_embedding)
-            
-            if categorical_tensors:
-                categorical_output = torch.stack(categorical_tensors, dim=1)  # [batch_size, num_features, hidden_size]
-                categorical_output = self.categorical_norm(categorical_output.mean(dim=1))  # [batch_size, hidden_size]
-                categorical_output = categorical_output.unsqueeze(1).expand(-1, seq_output.size(1), -1)  # [batch_size, seq_len, hidden_size]
-                all_features.append(categorical_output)
-                print(f"Categorical output shape: {categorical_output.shape}")
+            num_feature_sources += 1
+        if self.embedding_sequence_fields:
+            num_feature_sources += 1
+
+        self.feature_fusion = nn.Linear(self.hidden_size * num_feature_sources, self.hidden_size)
+
+    def forward(self, item_seq, item_seq_len, interaction=None):
+        # Основной output SASRec (B, H)
+        seq_output = super().forward(item_seq, item_seq_len)
+        all_features = [seq_output]
+
+        if interaction is not None:
+            device = seq_output.device
+
+            # Числовые признаки
+            if self.numerical_features:
+                numerical_stack = []
+                for field in self.numerical_features:
+                    if field in interaction:
+                        val = interaction[field]
+                        if not isinstance(val, torch.Tensor):
+                            val = torch.tensor(val, dtype=torch.float32, device=device)
+                        if val.dim() == 1:
+                            val = val.unsqueeze(-1)
+                        proj = self.numerical_projections[field](val)
+                        numerical_stack.append(proj)
+                if numerical_stack:
+                    num_avg = torch.stack(numerical_stack, dim=0).mean(dim=0)
+                    num_normed = self.norm_numerical(num_avg)
+                    all_features.append(num_normed)
+
+            # Категориальные признаки
+            if self.categorical_features:
+                categorical_stack = []
+                for field in self.categorical_features:
+                    if field in interaction:
+                        val = interaction[field]
+                        if not isinstance(val, torch.Tensor):
+                            val = torch.tensor(val, dtype=torch.long, device=device)
+                        emb = self.categorical_embeddings[field](val)
+                        categorical_stack.append(emb)
+                if categorical_stack:
+                    cat_avg = torch.stack(categorical_stack, dim=0).mean(dim=0)
+                    cat_normed = self.norm_categorical(cat_avg)
+                    all_features.append(cat_normed)
+
+            # Эмбеддинг-последовательности (embedding_list)
+            for idx_field in self.embedding_sequence_fields:
+                if idx_field not in interaction:
+                    continue
+
+                indices = interaction[idx_field]  # [B, L]
+                print(f"{idx_field} indices: min={indices.min().item()}, max={indices.max().item()}, shape={indices.shape}")
+                
+                if not isinstance(indices, torch.Tensor):
+                    indices = torch.tensor(indices, dtype=torch.long, device=seq_output.device)
+
+                if indices.dim() == 1:
+                    indices = indices.view(seq_output.shape[0], -1)
+
+                embed_matrix = self.embedding_list_weights[idx_field].to(seq_output.device)
+                assert indices.max().item() < embed_matrix.shape[0], f"Index out of bounds for {idx_field}"
+
+                embedded = embed_matrix[indices]  # [B, L, H]
+
+                # MASKED MEAN AGGREGATION
+                mask = (indices != 0).float().unsqueeze(-1)      # [B, L, 1]
+                masked_embeds = embedded * mask                  # [B, L, H]
+                sum_embeds = masked_embeds.sum(dim=1)            # [B, H]
+                count = mask.sum(dim=1).clamp(min=1e-6)          # [B, 1]
+                pooled = sum_embeds / count                      # [B, H]
+                pooled = self.embedding_sequence_norm(pooled)    # norm it
+                all_features.append(pooled)
+
+        concat = torch.cat(all_features, dim=-1)  # [B, D * num_parts]
         
-        # Объединяем все признаки
-        combined = torch.cat(all_features, dim=-1)  # [batch_size, seq_len, num_features * hidden_size]
-        print(f"Combined features shape: {combined.shape}")
-        combined = self.dropout(combined)
-        output = self.feature_fusion(combined)  # [batch_size, seq_len, hidden_size]
-        print(f"Final output shape: {output.shape}")
-        
-        return output
+        # Проверка перед передачей в слой feature_fusion
+        fused = self.dropout(self.feature_fusion(concat))  # [B, D]
+        return fused
+
+    def calculate_loss(self, interaction):
+        item_seq = interaction[self.ITEM_SEQ]
+        item_seq_len = interaction[self.ITEM_SEQ_LEN]
+        seq_output = self.forward(item_seq, item_seq_len, interaction)
+        pos_items = interaction[self.POS_ITEM_ID]
+
+        if pos_items.max() >= self.item_embedding.num_embeddings:
+            raise ValueError("Invalid item index in pos_items")
+
+        if self.loss_type == "BPR":
+            neg_items = interaction[self.NEG_ITEM_ID]
+            pos_emb = self.item_embedding(pos_items)
+            neg_emb = self.item_embedding(neg_items)
+            pos_score = torch.sum(seq_output * pos_emb, dim=-1)
+            neg_score = torch.sum(seq_output * neg_emb, dim=-1)
+            return self.loss_fct(pos_score, neg_score)
+        else:
+            test_item_emb = self.item_embedding.weight
+            logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
+            return self.loss_fct(logits, pos_items)
+
+    def predict(self, interaction):
+        item_seq = interaction[self.ITEM_SEQ]
+        item_seq_len = interaction[self.ITEM_SEQ_LEN]
+        test_item = interaction[self.ITEM_ID]
+        seq_output = self.forward(item_seq, item_seq_len, interaction)
+        test_item_emb = self.item_embedding(test_item)
+        return torch.sum(seq_output * test_item_emb, dim=-1)
+
+    def full_sort_predict(self, interaction):
+        item_seq = interaction[self.ITEM_SEQ]
+        item_seq_len = interaction[self.ITEM_SEQ_LEN]
+        seq_output = self.forward(item_seq, item_seq_len, interaction)
+        test_items_emb = self.item_embedding.weight
+        return torch.matmul(seq_output, test_items_emb.transpose(0, 1))
