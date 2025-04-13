@@ -1,6 +1,26 @@
 # Исключаем все содержимое папки data/datasets
 data/dataset/*
-
+checkpoints/
+compares/dataset/
+compares/log_tensorboard/
+compares/results/
+compares/wandb/
+data/all_events.csv
+data/category_mapping.parquet
+data/demographic_data.parquet
+data/id_history.parquet
+data/item_embeddings.npy
+data/mappings/
+data/textual_history.parquet
+data/train_events.csv
+data/train_targets.csv
+data/user_descriptions.parquet
+data/video_ids.npy
+data/video_index.faiss
+data/video_info.parquet
+data/video_info_v2.csv
+notebooks/Untitled.ipynb
+temp_current_model/
 # Существующие исключения
 data/dataset/all_events.csv
 data/dataset/id_history.parquet
