@@ -1,5 +1,5 @@
 model: BERT4Rec
-hidden_size: 512
+hidden_size: 384
 inner_size: 2048
 n_layers: 4
 num_hidden_layers: 4
@@ -16,4 +16,4 @@ initializer_range: 0.02
 # Feature parameters
 feature_fusion: true
 numerical_projection_dropout: 0.1
-categorical_embedding_size: 512
+categorical_embedding_size: 384

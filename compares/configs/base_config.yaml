@@ -2,26 +2,26 @@
 data:
   field_separator: "\t"
   seq_separator: " "
-  USER_ID_FIELD: viewer_uid
+  USER_ID_FIELD: user_id
   ITEM_ID_FIELD: rutube_video_id
   TIME_FIELD: timestamp
   RATING_FIELD: total_watchtime
-  
+
   # Текстовые поля Rutube
-  TEXT_FIELDS: 
-    - title
-    - category
+  TEXT_FIELDS: ['title']
   
   # Категориальные поля пользователя
   USER_FEATURES:
     - age
     - gender
     - region
-  
+
   # Параметры для последовательностей
   LIST_SUFFIX: _list
   MAX_ITEM_LIST_LENGTH: 50
   ITEM_LIST_LENGTH_FIELD: item_length
+  DIN_ITEM_LIST_LENGTH_FIELD: item_length
+  POSITION_FIELD: position_id
   
   # Поля для дополнительных признаков
   numerical_field_list: 
@@ -66,29 +66,33 @@ data:
     numerical_features: []  # Будет заполнено из feature_config
     token_features: []  # Будет заполнено из feature_config
     text_fields: []  # Будет заполнено из feature_config
-
+    embedding_sequence_fields: []
+    
 # Параметры для последовательных моделей
 train_neg_sample_args: ~
-neg_sampling: ~
+  # distribution: uniform
+  # sample_num: 1
+  # dynamic: False
 
 # Параметры для обучения
-epochs: 1
+epochs: 5
 learning_rate: 0.001
-train_batch_size: 4096
+train_batch_size: 256
 eval_batch_size: 4096
 stopping_step: 10
-loss_type: 'CE'
+loss_type: CE
 weight_decay: 0.0
 
 # Параметры оценки
-metrics: ["Hit", "MRR", "NDCG", "Precision", "Recall"]
-valid_metric: NDCG@10
-topk: [5, 10, 20]
+metrics: ['Recall', 'MRR', 'NDCG', 'Hit', 'Precision']
+valid_metric: MRR@10
+topk: [1, 5, 10, 20, 50]
 eval_args:
   split: {'RS': [0.8, 0.1, 0.1]}
   order: 'TO'
   group_by: 'user'
   mode: full
+  stopping_step: 5
 
 # Параметры для оптимизации памяти
 buffer_size: 10000
@@ -101,7 +105,24 @@ wandb_project: "recom_text_compares"
 save_dataset: true
 save_checkpoint: true
 log_interval: 100
+
 gpu_id: 1
 
-sim_threshold_precision: 0.79 #0.89
-sim_threshold_ndcg: 0.8 #0.83
+# Model parameters
+hidden_size: 64
+num_attention_heads: 4
+num_layers: 2
+hidden_dropout_prob: 0.1
+attn_dropout_prob: 0.1
+hidden_act: gelu
+layer_norm_eps: 1e-12
+initializer_range: 0.02
+
+# Negative sampling
+NEG_PREFIX: neg_
+LABEL_FIELD: label
+EMBEDDING_SIZE: 64
+
+# Training parameters
+save_step: 10
+eval_step: 1

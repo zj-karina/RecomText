@@ -6,7 +6,8 @@ rutube:
       "total_watchtime",
       "timestamp",
       "ua_device_type",
-      "ua_os"
+      "ua_os",
+      "category",
     ]
     user_features: [
       "viewer_uid",
@@ -21,13 +22,16 @@ rutube:
       "duration",
       "author_id"
     ]
+    text_features: [
+      "detailed_view",
+    ]
     numerical_features: [
       "total_watchtime",
       "timestamp",
       "duration",
       "age",
       "hour_sin",
-      "hour_cos"
+      "hour_cos",
     ]
     categorical_features: [
       "sex",
@@ -36,13 +40,15 @@ rutube:
       "ua_os",
       "category"
     ]
+    embedding_sequence_fields: ["detailed_view_embedding"]
+
 
   field_mapping:
     USER_ID_FIELD: "viewer_uid"
     ITEM_ID_FIELD: "rutube_video_id"
     RATING_FIELD: "total_watchtime"
     TIME_FIELD: "timestamp"
-    TEXT_FIELDS: ["title", "category"]
+    TEXT_FIELDS: ["detailed_view"]
 
 lastfm:
   features:
@@ -50,7 +56,8 @@ lastfm:
       "user_id",
       "artist_id",
       "timestamp",
-      "plays"
+      "plays",
+      "artist_name"
     ]
     user_features: [
       "user_id",
@@ -71,9 +78,12 @@ lastfm:
       "country"
     ]
 
+
   field_mapping:
     USER_ID_FIELD: "user_id"
     ITEM_ID_FIELD: "artist_id"
     RATING_FIELD: "plays"
     TIME_FIELD: "timestamp"
-    TEXT_FIELDS: ["artist_name"] 
+    TEXT_FIELDS: ["artist_name"]
+
+name: "full_features"
