@@ -19,7 +19,17 @@ class Trainer:
         self.optimizer = optimizer
         self.config = config
         
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Set device based on config
+        torch.cuda.set_device('cuda:1')
+        self.device = torch.device(f"cuda:{1}")
+        # if config.get('use_gpu', True) and torch.cuda.is_available():
+        #     gpu_id = config.get('gpu_id', 0)
+        #     torch.cuda.set_device(gpu_id)  # Explicitly set CUDA device
+        #     self.device = torch.device(f"cuda:{gpu_id}")
+        # else:
+        #     self.device = torch.device("cpu")
+            
+        print(f"Using device: {self.device}")  # Add debug print
         self.model.to(self.device)
 
         name_contrastive_loss = config.get('training', {}).get('contrastive_loss', 'cos_emb') # for future experiments with new losses
@@ -45,6 +55,8 @@ class Trainer:
             
             # Обучение
             train_metrics = self.train_epoch()
+            if epoch == 0:
+                self._save_checkpoint(epoch)
             print("\nTraining metrics:")
             self._print_metrics(train_metrics)
             
@@ -124,6 +136,15 @@ class Trainer:
         index_path = self.config['inference']['index_path']
         ids_path = self.config['inference']['ids_path']
         embeddings_path = self.config['inference']['embeddings_path']
+        
+        if not all(os.path.exists(p) for p in [index_path, ids_path, embeddings_path]):
+            print("\nIndex files not found, creating new index...")
+            try:
+                from indexer import main as create_index
+                create_index(config=self.config)
+            except Exception as e:
+                print(f"Error creating index: {str(e)}")
+                return None
 
         # Загрузка индекса и данных
         try:
@@ -135,38 +156,38 @@ class Trainer:
             return None
         
         # Загрузка демографических данных
-        # try:
-        #     demographic_data = pd.read_parquet('./data/demographic_data.parquet')
-        #     demographic_features = ['age_group', 'sex', 'region']
+        try:
+            demographic_data = pd.read_parquet('./data/demographic_data.parquet')
+            demographic_features = ['age_group', 'sex', 'region']
             
-        #     # Создаем центроиды для каждой демографической группы
-        #     demographic_centroids = {}
-        #     for feature in demographic_features:
-        #         demographic_centroids[feature] = {}
-        #         for group in demographic_data[feature].unique():
-        #             # Получаем пользователей из этой группы
-        #             group_users = demographic_data[demographic_data[feature] == group]['viewer_uid'].values
+            # Создаем центроиды для каждой демографической группы
+            demographic_centroids = {}
+            for feature in demographic_features:
+                demographic_centroids[feature] = {}
+                for group in demographic_data[feature].unique():
+                    # Получаем пользователей из этой группы
+                    group_users = demographic_data[demographic_data[feature] == group]['viewer_uid'].values
                     
-        #             # Получаем их эмбеддинги из истории просмотров
-        #             group_embeddings = []
-        #             for user_id in group_users:
-        #                 if user_id in textual_history['viewer_uid'].values:
-        #                     user_idx = textual_history[textual_history['viewer_uid'] == user_id].index[0]
-        #                     if user_idx < len(item_embeddings_array):
-        #                         group_embeddings.append(item_embeddings_array[user_idx])
+                    # Получаем их эмбеддинги из истории просмотров
+                    group_embeddings = []
+                    for user_id in group_users:
+                        if user_id in textual_history['viewer_uid'].values:
+                            user_idx = textual_history[textual_history['viewer_uid'] == user_id].index[0]
+                            if user_idx < len(item_embeddings_array):
+                                group_embeddings.append(item_embeddings_array[user_idx])
                     
-        #             if group_embeddings:
-        #                 # Вычисляем центроид группы
-        #                 group_centroid = np.mean(group_embeddings, axis=0)
-        #                 demographic_centroids[feature][group] = torch.tensor(
-        #                     group_centroid, 
-        #                     device=self.device
-        #                 )
+                    if group_embeddings:
+                        # Вычисляем центроид группы
+                        group_centroid = np.mean(group_embeddings, axis=0)
+                        demographic_centroids[feature][group] = torch.tensor(
+                            group_centroid, 
+                            device=self.device
+                        )
             
-        #     print(f"Loaded demographic data with features: {demographic_features}")
-        # except Exception as e:
-        #     print(f"Warning: Could not load demographic data: {str(e)}")
-        #     demographic_centroids = None
+            print(f"Loaded demographic data with features: {demographic_features}")
+        except Exception as e:
+            print(f"Warning: Could not load demographic data: {str(e)}")
+            demographic_centroids = None
         
         # Инициализация метрик
         sim_threshold_precision = self.config['metrics'].get('sim_threshold_precision', 0.07)
@@ -218,6 +239,10 @@ class Trainer:
                         # demographic_data,
                         # demographic_features,
                         # demographic_centroids
+                        top_k,
+                        demographic_data,
+                        demographic_features,
+                        demographic_centroids
                     )
                     self._update_metrics(metrics_accum, user_metrics)
                     num_users += 1
@@ -229,6 +254,7 @@ class Trainer:
         return self._compile_metrics(total_loss, total_contrastive_loss, total_recommendation_loss, metrics_accum, num_users)
 
     def _process_user(self, user_emb, item_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings_array, metrics_calculator, category_mapping, top_k):
+    def _process_user(self, user_emb, target_emb, items_ids, user_id, index, video_ids, df_videos_map, item_embeddings, metrics_calculator, top_k, demographic_data, demographic_features, demographic_centroids):
         """Обработка одного пользователя для расчета метрик"""
         # Поиск рекомендаций
         user_emb_np = user_emb.cpu().numpy().astype('float32')
@@ -240,10 +266,10 @@ class Trainer:
         relevance_scores = {}  # Инициализируем словарь для relevance_scores
         
         if len(indices) > 0 and len(indices[0]) > 0:
-            # Get recommendation embeddings
-            rec_embeddings = torch.tensor(item_embeddings_array[indices[0]], device=self.device)
-            
-            # Get metadata for recommendations
+            # Получение рекомендаций
+            rec_embeddings = torch.tensor(item_embeddings[indices[0]], device=self.device)
+            # Метаданные рекомендаций
+            rec_categories = []
             for idx in indices[0]:
                 # Get the video ID from the FAISS index
                 faiss_video_id = int(video_ids[idx][0])
@@ -287,14 +313,32 @@ class Trainer:
         #         user_row = user_row.iloc[0]
         #         user_demographics = {feature: user_row[feature] for feature in demographic_features 
         #                            if feature in user_row}
+        # Демографические данные
+        user_demographics = {}
+        if demographic_data is not None:
+            orig_user_id = self.val_loader.dataset.reverse_user_id_map.get(user_id.item())
+
+            # Фильтруем нужного пользователя по его ID
+            user_row = demographic_data[demographic_data['viewer_uid'] == orig_user_id]
+
+            if not user_row.empty:  # Проверяем, есть ли данные
+                user_row = user_row.iloc[0]
+                user_demographics = {feature: user_row[feature] for feature in demographic_features}  # Заполняем user_demo сразу
 
         # Создаем множество релевантных ID (для классических метрик)
         # В данном случае считаем релевантными те видео, которые пользователь уже смотрел
         relevant_ids = set([str(id) for id in items_ids.cpu().numpy() if id > 0])
         
         # Calculate metrics
+        # Целевой товар
+        target_id = items_ids[0].item()
+        orig_target_video_id = self.val_loader.dataset.reverse_item_id_map.get(target_id)
+        target_category = df_videos_map.get(orig_target_video_id, {}).get('category', 'Unknown')
+
         user_metrics = metrics_calculator.compute_metrics(
             item_emb,
+            rec_embeddings,
+            target_emb,
             rec_embeddings,
             target_category,
             rec_categories,
@@ -304,7 +348,11 @@ class Trainer:
             k=top_k
             # user_demographics,
             # demographic_centroids
+            top_k,
+            user_demographics,
+            demographic_centroids
         )
+
 
         return user_metrics
 
@@ -383,6 +431,25 @@ class Trainer:
                         else:
                             print(f"  {name}: {value}")
                             log_file.write(f"  {name}: {value}\n")
+        
+        # Группируем метрики по типам
+        groups = {
+            'Losses': {k: v for k, v in metrics.items() if 'loss' in k.lower()},
+            'Semantic Metrics': {k: v for k, v in metrics.items() if 'semantic' in k.lower()},
+            'Category Metrics': {k: v for k, v in metrics.items() if 'category' in k.lower() or 'cross' in k.lower()},
+            'NDCG': {k: v for k, v in metrics.items() if 'ndcg' in k.lower()},
+            'Demographic Alignment': {k: v for k, v in metrics.items() if 'das_' in k.lower()}
+        }
+        
+        # Выводим метрики по группам
+        for group_name, group_metrics in groups.items():
+            if group_metrics:  # Выводим группу только если есть метрики
+                print(f"\n{group_name}:")
+                for name, value in group_metrics.items():
+                    if isinstance(value, (int, float)):
+                        print(f"  {name}: {value:.4f}")
+                    else:
+                        print(f"  {name}: {value}")
 
     def training_step(self, batch):
         """Один шаг обучения."""

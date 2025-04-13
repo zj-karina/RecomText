@@ -42,7 +42,7 @@ class FeaturePreprocessor:
                 # Используем device при генерации эмбеддингов
                 embeddings = self.text_model.encode(
                     texts,
-                    batch_size=32,
+                    batch_size=8192,
                     show_progress_bar=True,
                     device=self.device  # Явно указываем устройство
                 )
@@ -120,17 +120,7 @@ class FeaturePreprocessor:
         dataset_type: str,
         is_train: bool = True
     ) -> pd.DataFrame:
-        """
-        Обработка всех признаков
-        
-        Args:
-            df: DataFrame с признаками
-            feature_config: Конфигурация признаков
-            output_dir: Директория для сохранения
-            experiment_name: Название эксперимента
-            dataset_type: Тип датасета ('rutube' или 'lastfm')
-            is_train: Флаг обучающей выборки
-        """
+        """Обработка всех признаков"""
         os.makedirs(f"{output_dir}/{experiment_name}", exist_ok=True)
         
         # Получаем конфигурацию для конкретного датасета
@@ -147,6 +137,10 @@ class FeaturePreprocessor:
         if text_fields:
             self.logger.info(f"Processing text fields: {text_fields}")
             df = self._process_text_features(df, text_fields)
+            # Добавляем эмбеддинги в numerical_features
+            for field in text_fields:
+                emb_features = [f'{field}_emb_{i}' for i in range(384)]
+                numerical_fields.extend(emb_features)
         
         if categorical_fields:
             self.logger.info(f"Processing categorical fields: {categorical_fields}")
@@ -155,6 +149,15 @@ class FeaturePreprocessor:
         if numerical_fields:
             self.logger.info(f"Processing numerical fields: {numerical_fields}")
             df = self._process_numerical_features(df, numerical_fields, is_train)
+        
+        # Убеждаемся, что все признаки имеют корректный тип данных
+        for field in categorical_fields:
+            if field in df.columns:
+                df[field] = df[field].astype('int64')
+            
+        for field in numerical_fields:
+            if field in df.columns:
+                df[field] = df[field].astype('float32')
         
         return df
 
