@@ -6,202 +6,243 @@ import json
 
 def load_data() -> tuple:
     """
-    Загружает данные о репозиториях
+    Loads all required datasets
     """
-    # В реальности здесь будет загрузка из вашего источника данных
-    # Сейчас создаем пример данных
-    data = pd.DataFrame([{
-        "owner": "pelmers",
-        "name": "text-rewriter",
-        "stars": 13,
-        "forks": 5,
-        "watchers": 4,
-        "isFork": False,
-        "isArchived": False,
-        "languages": [{"name": "JavaScript", "size": 21769}, {"name": "HTML", "size": 2096}, {"name": "CSS", "size": 2081}],
-        "languageCount": 3,
-        "topics": [{"name": "chrome-extension", "stars": 43211}],
-        "topicCount": 1,
-        "diskUsageKb": 75,
-        "pullRequests": 4,
-        "issues": 12,
-        "description": "Webextension to rewrite phrases in pages",
-        "primaryLanguage": "JavaScript",
-        "createdAt": "2015-03-14T22:35:11Z",
-        "pushedAt": "2022-02-11T14:26:00Z",
-        "defaultBranchCommitCount": 54,
-        "license": None,
-        "assignableUserCount": 1,
-        "codeOfConduct": None,
-        "forkingAllowed": True,
-        "nameWithOwner": "pelmers/text-rewriter",
-        "parent": None
-    }])
+    data = pd.read_csv('./data/train_events.csv')
+    video = pd.read_csv('./data/video_info_v2.csv')
+    targets = pd.read_csv('./data/train_targets.csv')
+    all_events = pd.read_csv('./data/all_events.csv')
     
-    return data
+    return data, video, targets, all_events
 
-def create_repo_history_sorted(df: pd.DataFrame) -> pd.DataFrame:
+def create_user_history_sorted(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Создает историю взаимодействия с репозиториями
+    Creates sorted viewing history for users
     """
-    # Создаем уникальный идентификатор для каждого репозитория
-    df['repo_id'] = df['nameWithOwner'].apply(lambda x: x.replace('/', '_'))
+    # Sort by timestamp
+    df = df.sort_values('event_timestamp')
     
-    # Сортируем по дате последнего обновления
-    df = df.sort_values('pushedAt')
+    # Remove 'video_' prefix from rutube_video_id
+    df['clean_video_id'] = df['rutube_video_id'].str.replace('video_', '')
     
-    # Группируем по владельцу и собираем список репозиториев
-    user_history = df.groupby('owner')['repo_id'].agg(list).reset_index()
+    # Group by user and collect list of viewed videos
+    user_history = df.groupby('viewer_uid')['clean_video_id'].agg(list).reset_index()
     
-    # Оставляем только пользователей с более чем одним репозиторием
-    user_history = user_history[user_history['repo_id'].map(len) > 1]
+    # Keep only users with more than one view
+    user_history = user_history[user_history['clean_video_id'].map(len) > 1]
     
     return user_history.reset_index(drop=True)
 
-def create_detailed_repo_history(df: pd.DataFrame) -> pd.DataFrame:
+def create_detailed_user_history(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Создает детальное текстовое описание репозиториев
+    Creates detailed textual viewing history for users as a single string in `detailed_view`.
     """
-    def create_repo_description(row):
+    # Словарь для перевода месяцев
+    month_dict = {
+        'January': 'января',
+        'February': 'февраля',
+        'March': 'марта',
+        'April': 'апреля',
+        'May': 'мая',
+        'June': 'июня',
+        'July': 'июля',
+        'August': 'августа',
+        'September': 'сентября',
+        'October': 'октября',
+        'November': 'ноября',
+        'December': 'декабря'
+    }
+    
+    # Форматируем дату
+    df['formatted_date'] = pd.to_datetime(df['event_timestamp']).dt.strftime('%d %B')
+    df['formatted_date'] = df['formatted_date'].apply(
+        lambda x: f"{x.split()[0]} {month_dict.get(x.split()[1], x.split()[1])}"
+    )
+
+    # Определяем тип клиента
+    df['client_type'] = df['ua_client_type'].apply(
+        lambda x: 'браузере' if x == 'browser' else 'приложении' if x == 'mobile app' else x
+    )
+    
+    # Создаем описание просмотра
+    def create_view_description(row):
         parts = []
-        
-        if pd.notna(row['description']):
-            parts.append(f"Описание: {row['description']}")
+
+        if pd.notna(row['title']):
+            parts.append('Название видео: ' + str(row['title']))
             
-        if pd.notna(row['primaryLanguage']):
-            parts.append(f"Основной язык: {row['primaryLanguage']}")
+        if pd.notna(row['category']):
+            parts.append('категории ' + str(row['category']))
             
-        if row['languages']:
-            lang_str = ', '.join([f"{lang['name']} ({lang['size']} байт)" for lang in row['languages']])
-            parts.append(f"Используемые языки: {lang_str}")
+        if pd.notna(row['client_type']):
+            parts.append(f"просмотрено в {row['client_type']}")
             
-        if row['topics']:
-            topics_str = ', '.join([topic['name'] for topic in row['topics']])
-            parts.append(f"Темы: {topics_str}")
+        if pd.notna(row['ua_os']):
+            parts.append(f"ОС {row['ua_os']}")
             
-        if pd.notna(row['createdAt']):
-            parts.append(f"Создан: {row['createdAt']}")
+        if pd.notna(row['formatted_date']):
+            parts.append(str(row['formatted_date']))
             
-        if pd.notna(row['pushedAt']):
-            parts.append(f"Последнее обновление: {row['pushedAt']}")
+        # Сохраняем категорию отдельно
+        category = row.get('category', 'unknown')
             
-        return ' ; '.join(parts)
+        return ' '.join(parts) if parts else None, category
     
-    # Создаем детальное описание для каждого репозитория
-    df['detailed_view'] = df.apply(create_repo_description, axis=1)
+    # Добавляем подробности о просмотре и категорию
+    df[['detailed_view', 'category']] = df.apply(create_view_description, axis=1, result_type='expand')
     
-    # Группируем по владельцу
-    user_history = df.groupby('owner').agg({
-        'detailed_view': lambda x: 'query: ' + ' ; '.join(x),
-        'primaryLanguage': list  # Сохраняем список основных языков
+    # Группируем по пользователям
+    user_history = df.groupby('viewer_uid').agg({
+        'detailed_view': lambda x: 'query: ' + ' ; '.join(filter(None, x)),
+        'category': list  # Сохраняем список категорий
     }).reset_index()
     
     return user_history
 
-def create_user_description(df: pd.DataFrame) -> pd.DataFrame:
+def create_user_description(targets_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Создает текстовое описание пользователей на основе их активности
+    Creates textual description of users based on their characteristics
     """
+    # Convert seconds to hours
+    
+    targets_df['hours_watched'] = targets_df['total_watchtime'] / 3600
+    
+    # Find maximum watch time for each user
+    max_watch_time = targets_df.groupby('viewer_uid')['hours_watched'].transform('max')
+    
+    # Filter rows with maximum watch time
+    filtered_df = targets_df[targets_df['hours_watched'] == max_watch_time]
+    
     def create_description(group):
         row = group.iloc[0]
-        
-        # Собираем статистику по репозиториям пользователя
-        total_stars = group['stars'].sum()
-        total_forks = group['forks'].sum()
-        total_watchers = group['watchers'].sum()
-        total_commits = group['defaultBranchCommitCount'].sum()
-        
-        # Собираем информацию о языках
-        languages = {}
-        for langs in group['languages']:
-            for lang in langs:
-                name = lang['name']
-                size = lang['size']
-                if name in languages:
-                    languages[name] += size
-                else:
-                    languages[name] = size
-        
-        # Сортируем языки по использованию
-        top_languages = sorted(languages.items(), key=lambda x: x[1], reverse=True)[:3]
-        top_langs_str = ', '.join([f"{lang} ({size} байт)" for lang, size in top_languages])
+        gender = "мужчина" if row['sex'] == 'male' else "женщина"
+        regions = ' и '.join(group['region'].unique())
         
         description = (
-            f"passage: Владелец {len(group)} репозиториев, "
-            f"всего {total_stars} звезд, {total_forks} форков, "
-            f"{total_watchers} наблюдателей, {total_commits} коммитов. "
-            f"Основные языки: {top_langs_str}"
+            f"passage: {gender}, {row['age']} лет, "
+            f"живет в {regions}, "
+            f"смотрит на сайте {row['hours_watched']:.1f} часов"
         )
         return description
     
-    user_descriptions = (df.groupby('owner')
+    user_descriptions = (filtered_df.groupby('viewer_uid')
                         .apply(create_description)
                         .reset_index()
                         .rename(columns={0: 'user_description'}))
     
     return user_descriptions
 
-def create_repo_info_table(df: pd.DataFrame) -> pd.DataFrame:
+def create_video_info_table(video_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Создает таблицу с информацией о репозиториях для инференса
+    Создает таблицу с информацией о видео для инференса и маппинг ID
     """
-    # Создаем уникальный маппинг языков в числа
-    all_languages = set()
-    for langs in df['languages']:
-        for lang in langs:
-            all_languages.add(lang['name'])
-    language_to_id = {lang: idx for idx, lang in enumerate(all_languages)}
+    # Создаем уникальный маппинг категорий в числа
+    unique_categories = video_df['category'].dropna().unique()
+    category_to_id = {cat: idx for idx, cat in enumerate(unique_categories)}
     
     # Подготавливаем таблицу
-    repo_info = df[['nameWithOwner', 'description', 'primaryLanguage', 'languages', 'topics']].copy()
+    video_info = video_df[['rutube_video_id', 'title', 'category']].copy()
     
-    # Создаем маппинг ID репозиториев в числовые индексы
-    repo_info['repo_id'] = repo_info['nameWithOwner'].apply(lambda x: x.replace('/', '_'))
-    item_id_map = {repo_id: idx for idx, repo_id in enumerate(repo_info['repo_id'].unique())}
+    # Убираем префикс 'video_' из rutube_video_id
+    video_info['clean_video_id'] = video_info['rutube_video_id'].str.replace('video_', '')
     
-    # Добавляем числовой ID языка
-    repo_info['language_id'] = repo_info['primaryLanguage'].map(language_to_id)
+    # Создаем маппинг ID видео в числовые индексы
+    unique_video_ids = video_info['clean_video_id'].unique()
+    item_id_map = {str(vid): idx for idx, vid in enumerate(unique_video_ids)}
+    
+    # Добавляем числовой ID категории
+    video_info['category_id'] = video_info['category'].map(category_to_id)
     
     # Заполняем пропуски
-    repo_info['description'] = repo_info['description'].fillna('')
-    repo_info['primaryLanguage'] = repo_info['primaryLanguage'].fillna('unknown')
-    repo_info['language_id'] = repo_info['language_id'].fillna(-1)
+    video_info['title'] = video_info['title'].fillna('')
+    video_info['category'] = video_info['category'].fillna('unknown')
+    video_info['category_id'] = video_info['category_id'].fillna(-1)
+    
+    # Убираем дубликаты
+    video_info = video_info.drop_duplicates(subset=['clean_video_id'])
     
     # Сохраняем маппинги
     mappings_dir = './data/mappings'
     os.makedirs(mappings_dir, exist_ok=True)
     
-    # Сохраняем маппинг репозиториев
+    # Сохраняем маппинг видео
     with open(os.path.join(mappings_dir, 'item_id_map.json'), 'w', encoding='utf-8') as f:
         json.dump(item_id_map, f, ensure_ascii=False, indent=2)
     print(f"Saved item_id_map with {len(item_id_map)} items")
     
-    # Сохраняем маппинг языков
-    language_mapping = pd.DataFrame({
-        'language': list(language_to_id.keys()),
-        'language_id': list(language_to_id.values())
+    # Сохраняем маппинг категорий
+    category_mapping = pd.DataFrame({
+        'category': list(category_to_id.keys()),
+        'category_id': list(category_to_id.values())
     })
-    language_mapping.to_parquet(os.path.join(mappings_dir, 'language_mapping.parquet'))
+    category_mapping.to_parquet(os.path.join(mappings_dir, 'category_mapping.parquet'))
     
-    return repo_info
+    return video_info
+
+def create_demographic_data(targets_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Создает таблицу с демографическими данными пользователей
+    """
+    # Выбираем нужные колонки и удаляем дубликаты
+    demographic_data = targets_df[['viewer_uid', 'sex', 'age', 'region']].drop_duplicates()
+    
+    # Создаем возрастные группы
+    demographic_data['age_group'] = pd.cut(
+        demographic_data['age'],
+        bins=[0, 18, 25, 35, 45, 55, 100],
+        labels=['<18', '18-25', '26-35', '36-45', '46-55', '55+']
+    )
+    
+    # Добавляем категорию 'unknown' для age_group
+    demographic_data['age_group'] = demographic_data['age_group'].cat.add_categories('unknown')
+    
+    # Заполняем пропуски
+    demographic_data['sex'] = demographic_data['sex'].fillna('unknown')
+    demographic_data['region'] = demographic_data['region'].fillna('unknown')
+    demographic_data['age_group'] = demographic_data['age_group'].fillna('unknown')
+    
+    return demographic_data
 
 def main():
-    # Загружаем данные
-    data = load_data()
+    # Load data
+    data, video, targets, all_events = load_data()
     
-    # Создаем историю репозиториев
-    user_history_df = create_repo_history_sorted(data)
-    detailed_history_df = create_detailed_repo_history(data)
-    user_descriptions = create_user_description(data)
+    # Combine all events
+    result = pd.concat([data, all_events], axis=0).drop_duplicates()
+    result = result.reset_index(drop=True)
+    
+    # Merge with video information
+    result_with_video_info = pd.merge(result, video, on='rutube_video_id', how='left')
 
-    # Сохраняем результаты
+    # Выбираем только колонки viewer_uid и region из result
+    regions = result[['viewer_uid', 'region']].drop_duplicates()
+    
+    # Добавляем region к targets
+    targets = pd.merge(targets, regions, on='viewer_uid', how='left')
+
+    # Выбираем только колонки viewer_uid и region из result
+    regions = result[['viewer_uid', 'total_watchtime']].drop_duplicates()
+    
+    # Добавляем region к targets
+    targets = pd.merge(targets, regions, on='viewer_uid', how='left')
+            
+    # Create viewing histories
+    user_history_df = create_user_history_sorted(result)
+    detailed_history_df = create_detailed_user_history(result_with_video_info)
+    user_descriptions = create_user_description(targets)
+
+    # Save results
     detailed_history_df.to_parquet('./data/textual_history.parquet')
     user_history_df.to_parquet('./data/id_history.parquet')
     user_descriptions.to_parquet('./data/user_descriptions.parquet')
 
     # Создаем таблицу для инференса
-    repo_info = create_repo_info_table(data)
-    repo_info.to_parquet('./data/repo_info.parquet')
+    video_info = create_video_info_table(video)
+    video_info.to_parquet('./data/video_info.parquet')
+
+    # Create demographic data
+    demographic_data = create_demographic_data(targets)
+    demographic_data.to_parquet('./data/demographic_data.parquet')
 
 if __name__ == "__main__":
     main() 
