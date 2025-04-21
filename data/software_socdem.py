@@ -3,13 +3,20 @@ import numpy as np
 from typing import Dict, List
 import os
 import json
+import hashlib
+
+def create_hash(text: str) -> str:
+    """
+    Создает SHA-256 хеш из строки
+    """
+    return hashlib.sha256(text.encode()).hexdigest()[:16]  # Берем первые 16 символов для удобства
 
 def load_data() -> pd.DataFrame:
     """
     Загружает данные о репозиториях из repo_metadata.json
     """
     # Проверяем существование файла
-    json_path = './data/repo_metadata.json'
+    json_path = '/home/romanova.karina2/.cache/kagglehub/datasets/pelmers/github-repository-metadata-with-5-stars/versions/15/repo_metadata.json'
     if not os.path.exists(json_path):
         raise FileNotFoundError(f"Файл {json_path} не найден")
     
@@ -30,7 +37,7 @@ def load_data() -> pd.DataFrame:
     # Заполняем пропуски
     for col in ['description', 'primaryLanguage', 'license', 'codeOfConduct']:
         if col in data.columns:
-            data[col] = data[col].fillna(None)
+            data[col] = data[col].replace({np.nan: None})
     
     # Преобразуем даты
     for col in ['createdAt', 'pushedAt']:
@@ -58,14 +65,15 @@ def create_repo_history_sorted(df: pd.DataFrame) -> pd.DataFrame:
     """
     Создает историю взаимодействия с репозиториями
     """
-    # Создаем уникальный идентификатор для каждого репозитория
-    df['repo_id'] = df['nameWithOwner'].apply(lambda x: x.replace('/', '_'))
+    # Создаем хеши для репозиториев и владельцев
+    df['repo_id'] = df['nameWithOwner'].apply(create_hash)
+    df['owner_hash'] = df['owner'].apply(create_hash)
     
     # Сортируем по дате последнего обновления
     df = df.sort_values('pushedAt')
     
-    # Группируем по владельцу и собираем список репозиториев
-    user_history = df.groupby('owner')['repo_id'].agg(list).reset_index()
+    # Группируем по хешу владельца и собираем список репозиториев
+    user_history = df.groupby('owner_hash')['repo_id'].agg(list).reset_index()
     
     # Оставляем только пользователей с более чем одним репозиторием
     user_history = user_history[user_history['repo_id'].map(len) > 1]
@@ -90,8 +98,17 @@ def create_detailed_repo_history(df: pd.DataFrame) -> pd.DataFrame:
             parts.append(f"Используемые языки: {lang_str}")
             
         if row['topics']:
-            topics_str = ', '.join([topic['name'] for topic in row['topics']])
-            parts.append(f"Темы: {topics_str}")
+            # Обрабатываем вложенную структуру тем
+            topics_list = []
+            for topic in row['topics']:
+                if isinstance(topic, dict) and 'name' in topic:
+                    if isinstance(topic['name'], dict) and 'name' in topic['name']:
+                        topics_list.append(topic['name']['name'])
+                    else:
+                        topics_list.append(str(topic['name']))
+            if topics_list:
+                topics_str = ', '.join(topics_list)
+                parts.append(f"Темы: {topics_str}")
             
         if pd.notna(row['createdAt']):
             parts.append(f"Создан: {row['createdAt']}")
@@ -101,11 +118,15 @@ def create_detailed_repo_history(df: pd.DataFrame) -> pd.DataFrame:
             
         return ' ; '.join(parts)
     
+    # Создаем хеши для репозиториев и владельцев
+    df['repo_id'] = df['nameWithOwner'].apply(create_hash)
+    df['owner_hash'] = df['owner'].apply(create_hash)
+    
     # Создаем детальное описание для каждого репозитория
     df['detailed_view'] = df.apply(create_repo_description, axis=1)
     
-    # Группируем по владельцу
-    user_history = df.groupby('owner').agg({
+    # Группируем по хешу владельца
+    user_history = df.groupby('owner_hash').agg({
         'detailed_view': lambda x: 'query: ' + ' ; '.join(x),
         'primaryLanguage': list  # Сохраняем список основных языков
     }).reset_index()
@@ -148,7 +169,10 @@ def create_user_description(df: pd.DataFrame) -> pd.DataFrame:
         )
         return description
     
-    user_descriptions = (df.groupby('owner')
+    # Создаем хеши для владельцев
+    df['owner_hash'] = df['owner'].apply(create_hash)
+    
+    user_descriptions = (df.groupby('owner_hash')
                         .apply(create_description)
                         .reset_index()
                         .rename(columns={0: 'user_description'}))
