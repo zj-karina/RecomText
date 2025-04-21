@@ -4,40 +4,54 @@ from typing import Dict, List
 import os
 import json
 
-def load_data() -> tuple:
+def load_data() -> pd.DataFrame:
     """
-    Загружает данные о репозиториях
+    Загружает данные о репозиториях из repo_metadata.json
     """
-    # В реальности здесь будет загрузка из вашего источника данных
-    # Сейчас создаем пример данных
-    data = pd.DataFrame([{
-        "owner": "pelmers",
-        "name": "text-rewriter",
-        "stars": 13,
-        "forks": 5,
-        "watchers": 4,
-        "isFork": False,
-        "isArchived": False,
-        "languages": [{"name": "JavaScript", "size": 21769}, {"name": "HTML", "size": 2096}, {"name": "CSS", "size": 2081}],
-        "languageCount": 3,
-        "topics": [{"name": "chrome-extension", "stars": 43211}],
-        "topicCount": 1,
-        "diskUsageKb": 75,
-        "pullRequests": 4,
-        "issues": 12,
-        "description": "Webextension to rewrite phrases in pages",
-        "primaryLanguage": "JavaScript",
-        "createdAt": "2015-03-14T22:35:11Z",
-        "pushedAt": "2022-02-11T14:26:00Z",
-        "defaultBranchCommitCount": 54,
-        "license": None,
-        "assignableUserCount": 1,
-        "codeOfConduct": None,
-        "forkingAllowed": True,
-        "nameWithOwner": "pelmers/text-rewriter",
-        "parent": None
-    }])
+    # Проверяем существование файла
+    json_path = './data/repo_metadata.json'
+    if not os.path.exists(json_path):
+        raise FileNotFoundError(f"Файл {json_path} не найден")
     
+    # Загружаем данные из JSON
+    with open(json_path, 'r', encoding='utf-8') as f:
+        repos_data = json.load(f)
+    
+    # Преобразуем в DataFrame
+    data = pd.DataFrame(repos_data)
+    
+    # Обрабатываем вложенные структуры
+    if 'languages' in data.columns:
+        data['languages'] = data['languages'].apply(lambda x: [{"name": k, "size": v} for k, v in x.items()] if isinstance(x, dict) else x)
+    
+    if 'topics' in data.columns:
+        data['topics'] = data['topics'].apply(lambda x: [{"name": t, "stars": 0} for t in x] if isinstance(x, list) else x)
+    
+    # Заполняем пропуски
+    for col in ['description', 'primaryLanguage', 'license', 'codeOfConduct']:
+        if col in data.columns:
+            data[col] = data[col].fillna(None)
+    
+    # Преобразуем даты
+    for col in ['createdAt', 'pushedAt']:
+        if col in data.columns:
+            data[col] = pd.to_datetime(data[col])
+    
+    # Преобразуем числовые колонки
+    numeric_cols = ['stars', 'forks', 'watchers', 'languageCount', 'topicCount', 
+                   'diskUsageKb', 'pullRequests', 'issues', 'defaultBranchCommitCount', 
+                   'assignableUserCount']
+    for col in numeric_cols:
+        if col in data.columns:
+            data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
+    
+    # Преобразуем булевы колонки
+    bool_cols = ['isFork', 'isArchived', 'forkingAllowed']
+    for col in bool_cols:
+        if col in data.columns:
+            data[col] = data[col].fillna(False).astype(bool)
+    
+    print(f"Загружено {len(data)} репозиториев")
     return data
 
 def create_repo_history_sorted(df: pd.DataFrame) -> pd.DataFrame:
@@ -204,4 +218,4 @@ def main():
     repo_info.to_parquet('./data/repo_info.parquet')
 
 if __name__ == "__main__":
-    main() 
+    main()
