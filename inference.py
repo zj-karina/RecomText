@@ -62,7 +62,6 @@ def evaluate_predictions(model, val_loader, textual_history, device, k=10, num_e
             items_text_inputs, user_text_inputs, item_ids, user_ids = [
                 to_device(x, device) for x in batch
             ]
-
             # Считаем user_embeddings
             _, user_embeddings = model(
                 items_text_inputs,

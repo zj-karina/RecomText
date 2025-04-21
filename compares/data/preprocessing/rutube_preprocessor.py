@@ -1,14 +1,19 @@
-import pandas as pd
+import os
+import logging
 import numpy as np
-from typing import Dict, List, Optional
-from sklearn.preprocessing import LabelEncoder
-from datetime import datetime
+import pandas as pd
+import torch
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sentence_transformers import SentenceTransformer
+from typing import List, Dict
 from data.preprocessing.feature_preprocessor import FeaturePreprocessor
 
+
 class RutubePreprocessor:
-    def __init__(self):
+    def __init__(self, device=None):
         self.user_encoder = LabelEncoder()
         self.item_encoder = LabelEncoder()
+        self.device = device
         
     def _process_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Обработка временных признаков"""
@@ -57,19 +62,9 @@ class RutubePreprocessor:
             df['region'] = df['region'].fillna('unknown')
         
         return df
-    
-    def preprocess(self, 
-                  df: pd.DataFrame, 
-                  feature_config: Dict,
-                  min_interactions: int = 5) -> pd.DataFrame:
-        """
-        Предобработка данных Rutube
-        
-        Args:
-            df: Исходный датафрейм
-            feature_config: Конфигурация используемых признаков
-            min_interactions: Минимальное количество взаимодействий
-        """
+
+    def preprocess(self, df: pd.DataFrame, feature_config: Dict, min_interactions: int = 5, is_train: bool = True, model_type: str = None, output_dir='',
+        experiment_name='') -> pd.DataFrame:
         df = df.copy()
 
         # Фильтруем пользователей и видео с малым количеством взаимодействий
@@ -97,7 +92,7 @@ class RutubePreprocessor:
             all_features.update([f for f in features if f in df.columns])
         
         # Обработка текстовых и других признаков через FeaturePreprocessor
-        feature_processor = FeaturePreprocessor()
+        feature_processor = FeaturePreprocessor(device=self.device)
         df = feature_processor.process_features(
             df=df,
             feature_config=feature_config,
@@ -121,10 +116,15 @@ class RutubePreprocessor:
         # Добавляем эмбеддинги текстовых полей
         text_fields = feature_config['field_mapping'].get('TEXT_FIELDS', [])
         for field in text_fields:
-            emb_features = [f'{field}_emb_{i}' for i in range(384)]
-            all_features.update(emb_features)
+            if field in df.columns:
+                emb_field = f'{field}_embedding'
+                emb_list_field = f'{field}_embedding_list'
+                if emb_field in df.columns:
+                    all_features.add(emb_field)
+                if emb_list_field in df.columns:
+                    all_features.add(emb_list_field)
         
         # Обновляем список признаков после всех преобразований
         available_features = [f for f in all_features if f in df.columns]
-
+        print(f"available_features = {available_features}")
         return df[available_features] 
