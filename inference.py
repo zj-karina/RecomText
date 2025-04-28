@@ -12,6 +12,7 @@ import json
 import numpy as np
 
 from models.multimodal_model import MultimodalRecommendationModel
+from models.text_model import TextOnlyRecommendationModel
 
 def to_device(data, device):
     """
@@ -90,7 +91,7 @@ def evaluate_predictions(model, val_loader, textual_history, device, k=10, num_e
                     user_text_inputs["input_ids"][u],
                     skip_special_tokens=True
                 )
-                print(f"\nUser text: {user_text_decoded.replace("passage: ", "")}")
+                print(f'\nUser text: {user_text_decoded.replace("passage: ", "")}')
     
                 # Получаем детальную историю просмотров
                 print("\nUser viewing history:")
@@ -146,8 +147,11 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(config['model']['text_model_name'])
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    model = MultimodalRecommendationModel.from_pretrained(checkpoint_dir)
+
+    if config['model'].get('use_fusion', True):
+        model = MultimodalRecommendationModel.from_pretrained(checkpoint_dir)
+    else:
+        model = TextOnlyRecommendationModel.from_pretrained(checkpoint_dir)
 
     model.to(device)
     
